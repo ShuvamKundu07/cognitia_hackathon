@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: pedestrian-shield-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DEBUG
+        value: "false"
+      - key: MOCK_MODE
+        value: "false"
+      - key: ALLOWED_ORIGINS
+        value: "*"
+
