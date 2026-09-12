@@ -12,17 +12,81 @@ export const WS_STATUS = {
   ERROR: 'ERROR',
 };
 
-function getResolvedWsUrl() {
-  if (import.meta.env.VITE_BACKEND_WS_URL) {
-    return import.meta.env.VITE_BACKEND_WS_URL.trim();
+export const LS_BACKEND_URL_KEY = 'pedestrian_safety_backend_ws_url';
+
+/**
+ * Normalizes user-entered or environment URL into a valid wss:// or ws:// WebSocket endpoint.
+ * Handles inputs like 'https://my-backend.onrender.com', 'my-backend.onrender.com', or 'ws://localhost:8000/ws'.
+ */
+export function formatWsUrl(inputUrl) {
+  if (!inputUrl || typeof inputUrl !== 'string') return '';
+  let trimmed = inputUrl.trim();
+  if (!trimmed) return '';
+
+  let isSecure = false;
+  if (trimmed.startsWith('https://') || trimmed.startsWith('wss://')) {
+    isSecure = true;
+  } else if (trimmed.startsWith('http://') || trimmed.startsWith('ws://')) {
+    isSecure = false;
+  } else if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+    isSecure = true;
   }
+
+  // Strip existing protocol
+  let cleanHost = trimmed.replace(/^(https?:\/\/|wss?:\/\/)/i, '');
+
+  // Strip trailing slashes
+  cleanHost = cleanHost.replace(/\/+$/, '');
+
+  // Ensure /ws path
+  if (!cleanHost.endsWith('/ws')) {
+    cleanHost = `${cleanHost}/ws`;
+  }
+
+  const proto = isSecure ? 'wss' : 'ws';
+  return `${proto}://${cleanHost}`;
+}
+
+/**
+ * Converts a WebSocket URL back to an HTTP/HTTPS URL for pinging health endpoints.
+ */
+export function wsToHttpUrl(wsUrl) {
+  if (!wsUrl || typeof wsUrl !== 'string') return '';
+  const trimmed = wsUrl.trim();
+  const proto = trimmed.startsWith('wss://') ? 'https://' : 'http://';
+  let clean = trimmed.replace(/^wss?:\/\//i, '');
+  clean = clean.replace(/\/ws\/?$/i, '');
+  clean = clean.replace(/\/+$/, '');
+  return `${proto}${clean}`;
+}
+
+export function getResolvedWsUrl() {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const custom = window.localStorage.getItem(LS_BACKEND_URL_KEY);
+    if (custom && custom.trim()) {
+      return formatWsUrl(custom.trim());
+    }
+  }
+
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+
+  if (import.meta.env.VITE_BACKEND_WS_URL) {
+    const trimmedWs = import.meta.env.VITE_BACKEND_WS_URL.trim();
+    // In HTTPS production (e.g. Vercel), reject ws://localhost default if VITE_BACKEND_URL is set to a cloud host
+    if (isHttps && trimmedWs.includes('localhost')) {
+      const httpUrl = import.meta.env.VITE_BACKEND_URL;
+      if (httpUrl && typeof httpUrl === 'string' && !httpUrl.includes('localhost')) {
+        return formatWsUrl(httpUrl);
+      }
+    }
+    return formatWsUrl(trimmedWs);
+  }
+
   const httpUrl = import.meta.env.VITE_BACKEND_URL;
   if (httpUrl && typeof httpUrl === 'string') {
-    const trimmed = httpUrl.trim();
-    const wsProto = trimmed.startsWith('https') ? 'wss' : 'ws';
-    const host = trimmed.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-    return `${wsProto}://${host}/ws`;
+    return formatWsUrl(httpUrl);
   }
+
   return 'ws://localhost:8000/ws';
 }
 
@@ -46,12 +110,63 @@ class WebSocketService {
   }
 
   setUrl(newUrl) {
-    if (newUrl && newUrl !== this.url) {
-      this.url = newUrl;
-      if (this.isConnected()) {
-        this.disconnect();
-        this.connect();
+    if (!newUrl) return;
+    const formatted = formatWsUrl(newUrl);
+    if (formatted) {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(LS_BACKEND_URL_KEY, formatted);
       }
+      this.url = formatted;
+      this.reconnectAttempts = 0;
+      this.disconnect();
+      this.connect();
+    }
+  }
+
+  resetUrl() {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(LS_BACKEND_URL_KEY);
+    }
+    this.url = getResolvedWsUrl();
+    this.reconnectAttempts = 0;
+    this.disconnect();
+    this.connect();
+    return this.url;
+  }
+
+  getUrl() {
+    return this.url;
+  }
+
+  async checkBackendHealth(targetUrl = this.url) {
+    const httpBase = wsToHttpUrl(targetUrl);
+    if (!httpBase) {
+      return { success: false, status: 0, latencyMs: 0, error: 'Invalid backend URL' };
+    }
+    const startTime = Date.now();
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const res = await fetch(`${httpBase}/health`, {
+        method: 'GET',
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      clearTimeout(timeoutId);
+      const latencyMs = Date.now() - startTime;
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return { success: true, status: res.status, latencyMs, data };
+      }
+      return { success: false, status: res.status, latencyMs, error: `HTTP ${res.status}` };
+    } catch (err) {
+      const latencyMs = Date.now() - startTime;
+      return {
+        success: false,
+        status: 0,
+        latencyMs,
+        error: err.name === 'AbortError' ? 'Render service is sleeping (timed out after 12s). Give it ~40-60s to spin up.' : (err.message || 'Connection failed'),
+      };
     }
   }
 

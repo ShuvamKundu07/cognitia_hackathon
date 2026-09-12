@@ -40,9 +40,11 @@ export function useCamera({
       setDevices(videoDevs);
       if (videoDevs.length > 0 && !selectedDeviceId) {
         const backCam = videoDevs.find((d) =>
-          d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment')
+          d.label && (d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment'))
         );
-        setSelectedDeviceId(backCam ? backCam.deviceId : videoDevs[0].deviceId);
+        if (backCam) {
+          setSelectedDeviceId(backCam.deviceId);
+        }
       }
     } catch (_e) {
       // ignore
@@ -67,10 +69,15 @@ export function useCamera({
       streamRef.current.getTracks().forEach((track) => track.stop());
     }
 
+    const videoConstraints = selectedDeviceId
+      ? { deviceId: { exact: selectedDeviceId } }
+      : { facingMode: { ideal: 'environment' } };
+
+    videoConstraints.width = { ideal: 1280, max: 1920 };
+    videoConstraints.height = { ideal: 720, max: 1920 };
+
     const constraints = {
-      video: selectedDeviceId
-        ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-        : { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: videoConstraints,
       audio: false,
     };
 
@@ -125,6 +132,20 @@ export function useCamera({
     }
   }, [isStarted, stream, startCamera, stopCamera]);
 
+  const [videoDimensions, setVideoDimensions] = useState({
+    width: 0,
+    height: 0,
+    isPortrait: false,
+    aspectRatio: 16 / 9,
+  });
+
+  const switchCamera = useCallback(() => {
+    if (!devices || devices.length < 2) return;
+    const currentIndex = devices.findIndex((d) => d.deviceId === selectedDeviceId);
+    const nextIndex = (currentIndex + 1) % devices.length;
+    setSelectedDeviceId(devices[nextIndex].deviceId);
+  }, [devices, selectedDeviceId]);
+
   // Effect to manage camera stream lifecycle when device changes while started
   useEffect(() => {
     if (!enabled || !isStarted) {
@@ -146,10 +167,15 @@ export function useCamera({
       setIsLoading(true);
       setError(null);
 
+      const videoConstraints = selectedDeviceId
+        ? { deviceId: { exact: selectedDeviceId } }
+        : { facingMode: { ideal: 'environment' } };
+
+      videoConstraints.width = { ideal: 1280, max: 1920 };
+      videoConstraints.height = { ideal: 720, max: 1920 };
+
       const constraints = {
-        video: selectedDeviceId
-          ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-          : { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: videoConstraints,
         audio: false,
       };
 
@@ -219,8 +245,41 @@ export function useCamera({
       const video = videoRef.current;
       if (!video || video.readyState < 2) return;
 
+      const vw = video.videoWidth || 640;
+      const vh = video.videoHeight || 360;
+
+      // Update detected orientation/aspect ratio
+      if (vw && vh && (vw !== videoDimensions.width || vh !== videoDimensions.height)) {
+        setVideoDimensions({
+          width: vw,
+          height: vh,
+          isPortrait: vh > vw,
+          aspectRatio: vw / vh,
+        });
+      }
+
+      // Preserve native aspect ratio (dynamic canvas dimensions for mobile portrait vs desktop landscape)
+      let outW = 640;
+      let outH = 360;
+      if (vh > vw) {
+        // Mobile portrait mode (e.g. 720x1280 or 1080x1920)
+        outH = 640;
+        outW = Math.round((vw / vh) * 640);
+        if (outW % 2 !== 0) outW += 1;
+      } else {
+        // Landscape mode (e.g. 1280x720)
+        outW = 640;
+        outH = Math.round((vh / vw) * 640);
+        if (outH % 2 !== 0) outH += 1;
+      }
+
+      if (canvas.width !== outW || canvas.height !== outH) {
+        canvas.width = outW;
+        canvas.height = outH;
+      }
+
       try {
-        ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+        ctx.drawImage(video, 0, 0, outW, outH);
         const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
         if (onFrameRef.current) {
           onFrameRef.current(dataUrl);
@@ -236,7 +295,7 @@ export function useCamera({
         frameIntervalRef.current = null;
       }
     };
-  }, [stream, enabled, isStarted, fps, targetWidth, targetHeight]);
+  }, [stream, enabled, isStarted, fps, targetWidth, targetHeight, videoDimensions.width, videoDimensions.height]);
 
   return {
     videoRef,
@@ -249,6 +308,9 @@ export function useCamera({
     devices,
     selectedDeviceId,
     setSelectedDeviceId,
+    videoDimensions,
+    isPortrait: videoDimensions.isPortrait,
+    switchCamera,
     fps,
     setFps,
     startCamera,

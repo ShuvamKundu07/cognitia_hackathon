@@ -105,9 +105,35 @@ export function useWebSocket({ onMessage } = {}) {
     return active.sendSettings(settings);
   }, [isMockMode]);
 
+  const [currentWsUrl, setCurrentWsUrl] = useState(() => wsService.getUrl());
+
+  const setWsUrl = useCallback((newUrl) => {
+    wsService.setUrl(newUrl);
+    setCurrentWsUrl(wsService.getUrl());
+  }, []);
+
+  const resetWsUrl = useCallback(() => {
+    const defaultUrl = wsService.resetUrl();
+    setCurrentWsUrl(defaultUrl);
+  }, []);
+
+  const reconnect = useCallback(() => {
+    wsService.disconnect();
+    wsService.connect();
+  }, []);
+
+  const checkBackendHealth = useCallback(async (targetUrl) => {
+    return await wsService.checkBackendHealth(targetUrl || wsService.getUrl());
+  }, []);
+
   return {
     status,
     isConnected: status === WS_STATUS.CONNECTED,
+    currentWsUrl,
+    setWsUrl,
+    resetWsUrl,
+    reconnect,
+    checkBackendHealth,
     isMockMode,
     toggleMockMode,
     sendFrame,

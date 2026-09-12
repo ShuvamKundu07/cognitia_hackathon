@@ -57,13 +57,22 @@ class FramePreprocessor:
             return None
 
     def normalize_resolution(self, frame: np.ndarray) -> np.ndarray:
-        """Resizes frame to the target inference resolution."""
+        """Resizes frame to the target inference resolution while preserving orientation."""
         if frame is None:
             return None
         h, w = frame.shape[:2]
-        if w == self.target_width and h == self.target_height:
+        if h > w:
+            # Portrait frame (phone held vertically)
+            target_w = min(self.target_width, self.target_height)
+            target_h = max(self.target_width, self.target_height)
+        else:
+            # Landscape frame (laptop or phone held horizontally)
+            target_w = max(self.target_width, self.target_height)
+            target_h = min(self.target_width, self.target_height)
+
+        if w == target_w and h == target_h:
             return frame
-        return cv2.resize(frame, (self.target_width, self.target_height), interpolation=cv2.INTER_AREA)
+        return cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
 
     def assess_quality(self, frame: np.ndarray) -> Dict[str, Any]:
         """Calculates image quality metrics and identifies degradation conditions."""

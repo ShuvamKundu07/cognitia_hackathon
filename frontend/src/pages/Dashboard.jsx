@@ -18,6 +18,8 @@ export function Dashboard({
   onRetryCamera,
   onStartCamera,
   onStopCamera,
+  onSwitchCamera,
+  isPortrait,
   cameraDevices,
   selectedCameraId,
   onCameraDeviceChange,
@@ -196,6 +198,8 @@ export function Dashboard({
             onRetry={onRetryCamera}
             onStartCamera={onStartCamera}
             onStopCamera={onStopCamera}
+            onSwitchCamera={onSwitchCamera}
+            isPortrait={isPortrait}
             objects={activeObjects}
             walkingPath={walkingPath}
             showWalkingPath={showWalkingPath}

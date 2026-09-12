@@ -1,5 +1,5 @@
 import { HazardOverlay } from './HazardOverlay';
-import { Camera as CameraIcon, AlertCircle, RefreshCw, VideoOff, Play, Square } from 'lucide-react';
+import { Camera as CameraIcon, AlertCircle, RefreshCw, VideoOff, Play, Square, SwitchCamera } from 'lucide-react';
 
 export function Camera({
   videoRef,
@@ -10,6 +10,8 @@ export function Camera({
   onRetry,
   onStartCamera,
   onStopCamera,
+  onSwitchCamera,
+  isPortrait = false,
   objects = [],
   walkingPath,
   showWalkingPath = true,
@@ -72,6 +74,20 @@ export function Camera({
             </button>
           )}
 
+          {/* Quick Flip Camera Button for Mobile/Multi-camera */}
+          {devices.length > 1 && (
+            <button
+              type="button"
+              onClick={onSwitchCamera}
+              className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-darkest hover:bg-surface-hover text-slate-200 hover:text-white border border-surface-border rounded-lg text-xs font-semibold transition-all focus:ring-2 focus:ring-sky-400 active:scale-95"
+              title="Switch / Flip Camera (Front / Back)"
+              aria-label="Switch between available cameras"
+            >
+              <SwitchCamera className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden sm:inline">Flip</span>
+            </button>
+          )}
+
           {/* FPS Selector */}
           <div className="flex items-center gap-1.5 text-xs text-slate-300">
             <label htmlFor="fps-select" className="font-medium text-slate-400">
@@ -110,13 +126,22 @@ export function Camera({
         </div>
       </div>
 
-      {/* Main Video Viewport */}
-      <div className="relative aspect-video w-full bg-black flex items-center justify-center overflow-hidden">
+      {/* Main Video Viewport - Automatically adapts to Mobile Portrait (9:16) vs Landscape (16:9) */}
+      <div
+        className={`relative w-full bg-black flex items-center justify-center overflow-hidden transition-all duration-200 ${
+          isPortrait
+            ? 'aspect-[9/16] max-h-[65vh] mx-auto'
+            : 'aspect-video'
+        }`}
+      >
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
+          onLoadedMetadata={(e) => {
+            e.target.play().catch(() => {});
+          }}
           className={`w-full h-full object-cover ${!isActive ? 'hidden' : 'block'}`}
           aria-label="Live forward-facing pedestrian camera view"
         />

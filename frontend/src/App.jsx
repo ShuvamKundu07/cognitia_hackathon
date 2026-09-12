@@ -366,6 +366,11 @@ export function App() {
   const {
     status: wsStatus,
     isConnected: isWsConnected,
+    currentWsUrl,
+    setWsUrl,
+    resetWsUrl,
+    reconnect: _reconnectWs,
+    checkBackendHealth,
     isMockMode,
     sendFrame,
     sendAudioChunk,
@@ -379,6 +384,11 @@ export function App() {
   } = useWebSocket({
     onMessage: handleIncomingMessage,
   });
+
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  const isLocalhostBackend = (currentWsUrl || '').includes('localhost') || (currentWsUrl || '').includes('127.0.0.1');
+  const showLocalhostWarning = isHttps && isLocalhostBackend && !isWsConnected;
+  const [dismissWarning, setDismissWarning] = useState(false);
 
   const handleUpdateSettings = useCallback(
     (newSettings) => {
@@ -424,6 +434,8 @@ export function App() {
     devices: cameraDevices,
     selectedDeviceId: selectedCameraId,
     setSelectedDeviceId: setSelectedCameraId,
+    isPortrait,
+    switchCamera,
     fps: cameraFps,
     setFps: setCameraFps,
     startCamera,
@@ -764,25 +776,61 @@ export function App() {
           </nav>
 
           <div className="flex items-center gap-2">
-            <div
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border ${
+            <button
+              type="button"
+              onClick={() => setCurrentPage('settings')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all hover:opacity-90 active:scale-95 focus:ring-2 focus:ring-sky-400 ${
                 isWsConnected
                   ? 'bg-emerald-950 text-emerald-300 border-emerald-600'
                   : wsStatus === 'RECONNECTING'
                   ? 'bg-amber-950 text-amber-300 border-amber-600 animate-pulse'
                   : 'bg-red-950 text-red-300 border-red-600'
               }`}
+              title={`Backend Status: ${wsStatus}. Tap to configure backend URL in Settings.`}
               aria-label={`FastAPI Backend status: ${wsStatus}`}
             >
               <Server className="w-3.5 h-3.5" />
               <span>{isMockMode ? 'MOCK ENGINE' : wsStatus}</span>
-            </div>
+            </button>
           </div>
         </div>
       </header>
 
       {/* Main Page Content */}
       <main role="main" className="flex-1 p-4 sm:p-6 md:p-8">
+        {/* Production Localhost Mismatch Alert Banner */}
+        {showLocalhostWarning && !dismissWarning && (
+          <div className="mb-6 max-w-7xl mx-auto p-4 bg-amber-950/90 border-2 border-amber-500 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs shadow-xl animate-fadeIn">
+            <div className="flex items-start gap-3 text-amber-200">
+              <ShieldAlert className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <strong className="text-white font-bold text-sm">Mobile / Cloud Deployment Notice: Backend Not Connected</strong>
+                <p className="text-amber-300/90 mt-0.5 leading-relaxed">
+                  Your frontend is running on HTTPS via Vercel, but the backend target is still pointing to <code className="bg-amber-900/60 px-1 py-0.5 rounded font-mono text-amber-100 font-bold">{currentWsUrl}</code> (which does not exist on your phone). Tap below to enter your Render backend URL.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentPage('settings')}
+                className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg transition-all shadow active:scale-95 flex items-center gap-1.5"
+              >
+                <Server className="w-3.5 h-3.5" />
+                <span>Configure Render URL</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDismissWarning(true)}
+                className="px-2.5 py-2 text-amber-400 hover:text-amber-200 border border-amber-800 bg-amber-950 rounded-lg"
+                aria-label="Dismiss warning"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {currentPage === 'dashboard' && (
           <Dashboard
             videoRef={videoRef}
@@ -793,6 +841,8 @@ export function App() {
             onRetryCamera={handleStartCamera}
             onStartCamera={handleStartCamera}
             onStopCamera={handleStopCamera}
+            onSwitchCamera={switchCamera}
+            isPortrait={isPortrait}
             cameraDevices={cameraDevices}
             selectedCameraId={selectedCameraId}
             onCameraDeviceChange={setSelectedCameraId}
@@ -851,6 +901,11 @@ export function App() {
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
             onResetSettings={handleResetSettings}
+            backendWsUrl={currentWsUrl}
+            backendStatus={wsStatus}
+            onUpdateBackendWsUrl={setWsUrl}
+            onResetBackendWsUrl={resetWsUrl}
+            onCheckBackendHealth={checkBackendHealth}
           />
         )}
       </main>

@@ -1,10 +1,35 @@
-import { Sliders, RotateCcw } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import {
+  Sliders,
+  RotateCcw,
+  Server,
+  Globe,
+  RefreshCw,
+  CheckCircle2,
+  AlertCircle,
+  Clock,
+  Sparkles,
+  ExternalLink,
+} from 'lucide-react';
 
 export function Settings({
   settings,
   onUpdateSettings,
   onResetSettings,
+  backendWsUrl = '',
+  backendStatus = 'DISCONNECTED',
+  onUpdateBackendWsUrl,
+  onResetBackendWsUrl,
+  onCheckBackendHealth,
 }) {
+  const [urlInput, setUrlInput] = useState(backendWsUrl);
+  const [pingStatus, setPingStatus] = useState({ loading: false, result: null });
+  const [showVercelGuide, setShowVercelGuide] = useState(false);
+
+  useEffect(() => {
+    setUrlInput(backendWsUrl);
+  }, [backendWsUrl]);
+
   const handleChange = (key, value) => {
     onUpdateSettings({ ...settings, [key]: value });
   };
@@ -12,6 +37,23 @@ export function Settings({
   const handleToggle = (key) => {
     onUpdateSettings({ ...settings, [key]: !settings[key] });
   };
+
+  const handleSaveBackendUrl = (e) => {
+    e.preventDefault();
+    if (onUpdateBackendWsUrl && urlInput.trim()) {
+      onUpdateBackendWsUrl(urlInput.trim());
+    }
+  };
+
+  const handleTestPing = async () => {
+    if (!onCheckBackendHealth) return;
+    setPingStatus({ loading: true, result: null });
+    const res = await onCheckBackendHealth(urlInput.trim());
+    setPingStatus({ loading: false, result: res });
+  };
+
+  const isWsConnected = backendStatus === 'CONNECTED';
+  const isWsConnecting = backendStatus === 'CONNECTING' || backendStatus === 'RECONNECTING';
 
   return (
     <section
@@ -39,6 +81,163 @@ export function Settings({
       </div>
 
       <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Render Backend Connection & Deployment Status Card */}
+        <div className="md:col-span-2 flex flex-col gap-3 p-4 bg-surface-darkest rounded-xl border-2 border-sky-900/60 shadow-inner">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Server className="w-5 h-5 text-sky-400" />
+              <div>
+                <h3 className="text-sm font-bold text-white tracking-wide flex items-center gap-2">
+                  <span>BACKEND CONNECTION (RENDER & VERCEL)</span>
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Target FastAPI AI service for real-time video inference and hazard detection.
+                </p>
+              </div>
+            </div>
+
+            {/* Live Connection Status Badge */}
+            <div className="flex items-center gap-2">
+              <span
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full border ${
+                  isWsConnected
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-500'
+                    : isWsConnecting
+                    ? 'bg-amber-950 text-amber-300 border-amber-500 animate-pulse'
+                    : 'bg-red-950 text-red-300 border-red-500'
+                }`}
+              >
+                {isWsConnected && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
+                {isWsConnecting && <RefreshCw className="w-3.5 h-3.5 text-amber-400 animate-spin" />}
+                {!isWsConnected && !isWsConnecting && <AlertCircle className="w-3.5 h-3.5 text-red-400" />}
+                <span>
+                  {isWsConnected
+                    ? 'CONNECTED & ACTIVE'
+                    : isWsConnecting
+                    ? 'CONNECTING (Waking Render...)'
+                    : 'DISCONNECTED'}
+                </span>
+              </span>
+            </div>
+          </div>
+
+          {/* Render Cold-Start Notice Banner */}
+          <div className="p-3 bg-sky-950/40 border border-sky-800/50 rounded-lg text-xs text-sky-200 flex items-start gap-2.5">
+            <Clock className="w-4 h-4 text-sky-400 flex-shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold text-white">
+                Render Free-Tier Spin-Down Notice
+              </p>
+              <p className="text-slate-300 leading-relaxed">
+                Render free-tier instances sleep after 15 minutes of inactivity. On cold start, Render takes <strong className="text-amber-300">50 to 90 seconds</strong> to boot up. On mobile phones (HTTPS via Vercel), connections must use secure WebSockets (<strong className="text-emerald-300">wss://</strong>).
+              </p>
+            </div>
+          </div>
+
+          {/* URL Input & Controls Form */}
+          <form onSubmit={handleSaveBackendUrl} className="flex flex-col sm:flex-row gap-2 mt-1">
+            <div className="relative flex-1">
+              <input
+                id="setting-backend-url"
+                type="text"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="e.g. wss://your-backend.onrender.com/ws or https://your-backend.onrender.com"
+                className="w-full bg-surface-elevated border-2 border-surface-border rounded-lg pl-3 pr-8 py-2 text-sm text-white placeholder-slate-500 font-mono focus:ring-2 focus:ring-sky-400"
+                aria-label="Backend WebSocket URL"
+              />
+              <Globe className="w-4 h-4 text-slate-500 absolute right-2.5 top-3" />
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs rounded-lg shadow transition-all active:scale-95 focus:ring-2 focus:ring-sky-400 flex items-center gap-1.5"
+              >
+                <Server className="w-3.5 h-3.5" />
+                <span>Save & Connect</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTestPing}
+                disabled={pingStatus.loading}
+                className="px-3 py-2 bg-surface-elevated hover:bg-surface-hover text-slate-200 border border-surface-border font-bold text-xs rounded-lg transition-all active:scale-95 focus:ring-2 focus:ring-sky-400 flex items-center gap-1.5 disabled:opacity-60"
+                title="Ping backend health endpoint to check responsiveness and wake up sleeping Render instance"
+              >
+                {pingStatus.loading ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-sky-400" />
+                ) : (
+                  <Sparkles className="w-3.5 h-3.5 text-sky-400" />
+                )}
+                <span>{pingStatus.loading ? 'Pinging...' : 'Wake Up / Test'}</span>
+              </button>
+
+              {onResetBackendWsUrl && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetBackendWsUrl();
+                    setUrlInput('');
+                  }}
+                  className="px-2.5 py-2 text-xs text-slate-400 hover:text-slate-200 border border-surface-border bg-surface-elevated rounded-lg transition-colors"
+                  title="Reset URL to default environment configuration"
+                >
+                  Reset
+                </button>
+              )}
+            </div>
+          </form>
+
+          {/* Test Ping Result Banner */}
+          {pingStatus.result && (
+            <div
+              className={`p-3 rounded-lg border text-xs flex items-center justify-between gap-2 ${
+                pingStatus.result.success
+                  ? 'bg-emerald-950/70 border-emerald-600 text-emerald-200'
+                  : 'bg-amber-950/70 border-amber-600 text-amber-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                {pingStatus.result.success ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                )}
+                <span>
+                  {pingStatus.result.success
+                    ? `Backend Online! Responded HTTP ${pingStatus.result.status} in ${pingStatus.result.latencyMs}ms.`
+                    : `Health check response: ${pingStatus.result.error || 'Connection failed'}.`}
+                </span>
+              </div>
+              <span className="font-mono text-[11px] opacity-75">{pingStatus.result.latencyMs}ms</span>
+            </div>
+          )}
+
+          {/* Permanent Deployment Guide Accordion */}
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => setShowVercelGuide(!showVercelGuide)}
+              className="text-xs text-sky-400 hover:text-sky-300 flex items-center gap-1 font-semibold"
+            >
+              <ExternalLink className="w-3 h-3" />
+              <span>{showVercelGuide ? 'Hide Vercel Environment Setup Guide' : 'How to configure permanently in Vercel Dashboard'}</span>
+            </button>
+
+            {showVercelGuide && (
+              <div className="mt-2 p-3 bg-surface-card border border-surface-border rounded-lg text-xs text-slate-300 space-y-2">
+                <p className="font-bold text-white">To make this permanent on your deployed Vercel site:</p>
+                <ol className="list-decimal list-inside space-y-1.5 text-slate-300">
+                  <li>Go to your <a href="https://vercel.com/dashboard" target="_blank" rel="noreferrer" className="text-sky-400 underline">Vercel Project Dashboard</a> &rarr; <strong>Settings</strong> &rarr; <strong>Environment Variables</strong>.</li>
+                  <li>Add <code className="text-sky-300 bg-surface-darkest px-1 py-0.5 rounded font-mono">VITE_BACKEND_URL</code> = <code className="text-emerald-300 bg-surface-darkest px-1 py-0.5 rounded font-mono">https://your-backend.onrender.com</code></li>
+                  <li>Add <code className="text-sky-300 bg-surface-darkest px-1 py-0.5 rounded font-mono">VITE_BACKEND_WS_URL</code> = <code className="text-emerald-300 bg-surface-darkest px-1 py-0.5 rounded font-mono">wss://your-backend.onrender.com/ws</code></li>
+                  <li>Click <strong>Deployments</strong> &rarr; <strong>Redeploy</strong> to apply the changes.</li>
+                </ol>
+              </div>
+            )}
+          </div>
+        </div>
         {/* Detection Sensitivity */}
         <div className="flex flex-col gap-2 p-4 bg-surface-darkest rounded-xl border border-surface-border">
           <label htmlFor="setting-sensitivity" className="text-sm font-bold text-white">
