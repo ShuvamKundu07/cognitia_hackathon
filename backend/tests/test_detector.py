@@ -164,3 +164,113 @@ def test_yolo_detector_dual_engine_inference():
     detected = yolo.detect(frame)
     assert isinstance(detected, list)
 
+
+def test_roboflow_detector_unconfigured():
+    """Verify RoboflowHazardDetector handles unconfigured credentials safely."""
+    from app.vision.detector import RoboflowHazardDetector
+
+    detector = RoboflowHazardDetector(api_key="", model_id="")
+    assert detector.is_available is False
+    assert detector.detect(None) == []
+    frame = np.full((360, 640, 3), 120, dtype=np.uint8)
+    assert detector.detect(frame) == []
+
+
+def test_roboflow_detector_successful_inference(monkeypatch):
+    """Verify RoboflowHazardDetector parses predictions and computes normalized bboxes and directions."""
+    from unittest.mock import MagicMock
+    from app.vision.detector import RoboflowHazardDetector
+
+    detector = RoboflowHazardDetector(
+        api_key="rf_test_key_123",
+        model_id="pothole-shield/1",
+        confidence_threshold=0.35,
+    )
+    assert detector.is_available is True
+    assert detector.endpoint_url == "https://detect.roboflow.com/pothole-shield/1"
+
+    # Mock response
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "predictions": [
+            {
+                "x": 320.0,
+                "y": 250.0,
+                "width": 120.0,
+                "height": 80.0,
+                "class": "pothole",
+                "confidence": 0.88,
+            },
+            {
+                "x": 580.0,
+                "y": 200.0,
+                "width": 80.0,
+                "height": 90.0,
+                "class": "car",
+                "confidence": 0.94,
+            },
+        ]
+    }
+
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+    detector.client = mock_client
+
+    frame = np.full((360, 640, 3), 120, dtype=np.uint8)
+    hazards = detector.detect(frame, timestamp=100.0)
+
+    assert len(hazards) == 2
+
+    # Pothole verification
+    pothole = hazards[0]
+    assert pothole.label == "pothole"
+    assert pothole.confidence == 0.88
+    assert pothole.direction == Direction.AHEAD
+    assert pothole.urgency in (UrgencyLevel.HIGH, UrgencyLevel.CRITICAL)
+    # Check normalized bounding box (center 320, width 120 -> left 260 -> 260/640 = 0.40625)
+    assert abs(pothole.bbox.x - (260.0 / 640.0)) < 0.01
+    assert abs(pothole.bbox.width - (120.0 / 640.0)) < 0.01
+
+    # Car verification (center 580 -> right side)
+    car = hazards[1]
+    assert car.label == "car"
+    assert car.confidence == 0.94
+    assert car.direction == Direction.RIGHT
+
+
+def test_roboflow_detector_network_error_graceful(monkeypatch):
+    """Verify RoboflowHazardDetector catches HTTP timeouts or connection errors gracefully without crashing."""
+    import httpx
+    from unittest.mock import MagicMock
+    from app.vision.detector import RoboflowHazardDetector
+
+    detector = RoboflowHazardDetector(
+        api_key="rf_test_key_123",
+        model_id="pothole-shield/1",
+    )
+
+    mock_client = MagicMock()
+    mock_client.post.side_effect = httpx.ConnectTimeout("Network connection timed out")
+    detector.client = mock_client
+
+    frame = np.full((360, 640, 3), 120, dtype=np.uint8)
+    hazards = detector.detect(frame)
+    assert hazards == []
+
+
+def test_get_detector_factory_roboflow_selection(monkeypatch):
+    """Verify get_detector returns RoboflowHazardDetector when configured."""
+    from app.config import settings
+    from app.vision.detector import get_detector, RoboflowHazardDetector
+
+    monkeypatch.setattr(settings, "mock_mode", False)
+    monkeypatch.setattr(settings, "yolo_provider", "roboflow")
+    monkeypatch.setattr(settings, "roboflow_api_key", "rf_test_123")
+    monkeypatch.setattr(settings, "roboflow_model_id", "pedestrian-hazards/1")
+
+    detector = get_detector(mock_mode=False)
+    assert isinstance(detector, RoboflowHazardDetector)
+    assert detector.is_available is True
+
+

@@ -11,7 +11,13 @@ services:
       - key: DEBUG
         value: "false"
       - key: MOCK_MODE
-        value: "true"
+        value: "false"
+      - key: YOLO_PROVIDER
+        value: "roboflow"
+      - key: ROBOFLOW_API_KEY
+        sync: false
+      - key: ROBOFLOW_MODEL_ID
+        sync: false
       - key: ALLOWED_ORIGINS
         value: "*"
 

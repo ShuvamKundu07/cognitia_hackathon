@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     frame_queue_maxsize: int = 1
     stale_frame_drop_ms: int = 250
 
+    # Remote Hosted YOLO API Configuration (e.g. Roboflow)
+    yolo_provider: str = "local"  # "local" or "roboflow"
+    roboflow_api_key: str = ""
+    roboflow_model_id: str = ""
+    roboflow_version: str = "1"
+    roboflow_confidence: float = 0.35
+    yolo_model_endpoint: str = ""
+
+
     # Walking Corridor (normalized image coordinates)
     walking_path_x: float = 0.30
     walking_path_y: float = 0.45

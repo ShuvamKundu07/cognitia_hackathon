@@ -1,19 +1,20 @@
 """Object and pedestrian hazard detector interface and implementations."""
 
 from abc import ABC, abstractmethod
+import base64
 import logging
 import math
 import os
 import time
 from typing import Any, Dict, List, Optional
+import cv2
+import httpx
 import numpy as np
 
 from app.config import settings
 from app.hazards.models import BoundingBox, DetectedObject, Direction, UrgencyLevel
 
 logger = logging.getLogger("vision.detector")
-
-import cv2
 
 # Pedestrian-relevant class mapping from generic COCO
 COCO_HAZARD_MAP = {
@@ -677,16 +678,205 @@ class MockDetector(BaseObjectDetector):
         return objects
 
 
+class RoboflowHazardDetector(BaseObjectDetector):
+    """Remote cloud-hosted YOLO hazard detector utilizing Roboflow Inference API.
+
+    Transmits camera frames to a hosted Roboflow model endpoint via HTTP POST,
+    parses returned bounding boxes, and translates hazard classes into pedestrian safety alerts.
+    Keeps server memory usage negligible (<150MB RAM), enabling full AI capability on free-tier hosts like Render.
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model_id: Optional[str] = None,
+        version: Optional[str] = None,
+        confidence_threshold: float = 0.35,
+        endpoint_url: Optional[str] = None,
+        timeout_seconds: float = 2.5,
+    ):
+        self.api_key = (
+            api_key
+            or getattr(settings, "roboflow_api_key", "")
+            or os.environ.get("ROBOFLOW_API_KEY", "")
+        ).strip()
+        self.model_id = (
+            model_id
+            or getattr(settings, "roboflow_model_id", "")
+            or os.environ.get("ROBOFLOW_MODEL_ID", "")
+        ).strip()
+        self.version = str(
+            version
+            or getattr(settings, "roboflow_version", "1")
+            or os.environ.get("ROBOFLOW_VERSION", "1")
+        ).strip()
+        self.confidence_threshold = confidence_threshold or getattr(settings, "roboflow_confidence", 0.35)
+        self.endpoint_url = (endpoint_url or getattr(settings, "yolo_model_endpoint", "")).strip()
+        self.timeout_seconds = timeout_seconds
+
+        # Construct endpoint URL if not provided directly
+        if not self.endpoint_url and self.model_id:
+            if "/" in self.model_id:
+                parts = self.model_id.strip("/").split("/")
+                proj, ver = parts[0], parts[1]
+            else:
+                proj, ver = self.model_id, self.version
+            self.endpoint_url = f"https://detect.roboflow.com/{proj}/{ver}"
+
+        self.is_available = bool(self.api_key and self.endpoint_url)
+        self.client: Optional[httpx.Client] = None
+
+        if self.is_available:
+            try:
+                self.client = httpx.Client(timeout=self.timeout_seconds)
+                logger.info("RoboflowHazardDetector initialized. Endpoint: %s", self.endpoint_url)
+            except Exception as e:
+                logger.error("Failed to initialize httpx client for Roboflow: %s", e)
+                self.is_available = False
+        else:
+            logger.info("RoboflowHazardDetector initialized in standby (API key or Model ID not yet set).")
+
+    def detect(self, frame: np.ndarray, timestamp: float = 0.0) -> List[DetectedObject]:
+        if not self.is_available or self.client is None or frame is None or frame.size == 0:
+            return []
+        if timestamp <= 0.0:
+            timestamp = time.time()
+
+        h, w = frame.shape[:2]
+
+        try:
+            # 1. Encode frame to JPEG
+            success, encoded_img = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if not success:
+                logger.warning("Failed to encode frame to JPEG for Roboflow inference.")
+                return []
+
+            img_bytes = encoded_img.tobytes()
+
+            # Roboflow expects query parameters: api_key and confidence (0-100)
+            conf_int = int(round(self.confidence_threshold * 100))
+            params = {
+                "api_key": self.api_key,
+                "confidence": str(conf_int),
+                "overlap": "30",
+            }
+
+            # Multipart file upload to Roboflow
+            files = {"file": ("frame.jpg", img_bytes, "image/jpeg")}
+            resp = self.client.post(self.endpoint_url, params=params, files=files)
+
+            # Fallback to base64 encoding if server requests urlencoded format
+            if resp.status_code == 415 or resp.status_code == 400:
+                b64_str = base64.b64encode(img_bytes).decode("ascii")
+                resp = self.client.post(
+                    self.endpoint_url,
+                    params=params,
+                    data=b64_str,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+
+            if resp.status_code != 200:
+                logger.warning("Roboflow API returned HTTP %d: %s", resp.status_code, resp.text[:200])
+                return []
+
+            data = resp.json()
+            predictions = data.get("predictions", [])
+            detected: List[DetectedObject] = []
+
+            for i, pred in enumerate(predictions):
+                conf = float(pred.get("confidence", 0.0))
+                if conf < self.confidence_threshold:
+                    continue
+
+                raw_class = str(pred.get("class", "obstacle")).strip().lower()
+                hazard_type = COCO_HAZARD_MAP.get(raw_class, raw_class.replace(" ", "_"))
+
+                # Roboflow coordinates are pixel centers: x, y, width, height
+                pred_x = float(pred.get("x", 0.0))
+                pred_y = float(pred.get("y", 0.0))
+                pred_w = float(pred.get("width", 0.0))
+                pred_h = float(pred.get("height", 0.0))
+
+                norm_w = max(0.01, min(1.0, pred_w / float(w)))
+                norm_h = max(0.01, min(1.0, pred_h / float(h)))
+                norm_x = max(0.0, min(1.0, (pred_x - (pred_w / 2.0)) / float(w)))
+                norm_y = max(0.0, min(1.0, (pred_y - (pred_h / 2.0)) / float(h)))
+
+                bbox = BoundingBox(x=norm_x, y=norm_y, width=norm_w, height=norm_h)
+
+                # Direction based on centroid
+                cx = bbox.center_x
+                if cx < 0.35:
+                    direction = Direction.LEFT
+                elif cx > 0.65:
+                    direction = Direction.RIGHT
+                else:
+                    direction = Direction.AHEAD
+
+                # Urgency heuristic
+                in_corridor = (norm_x + norm_w > 0.30) and (norm_x < 0.70)
+                if hazard_type == "vehicle":
+                    urgency = UrgencyLevel.CRITICAL if (in_corridor and norm_y > 0.40) else UrgencyLevel.HIGH
+                elif hazard_type == "pedestrian":
+                    urgency = UrgencyLevel.HIGH if (in_corridor and norm_y > 0.45) else UrgencyLevel.MEDIUM
+                elif hazard_type == "pothole":
+                    urgency = UrgencyLevel.HIGH if (in_corridor and norm_y > 0.40) else UrgencyLevel.MEDIUM
+                else:
+                    urgency = UrgencyLevel.MEDIUM if in_corridor else UrgencyLevel.LOW
+
+                det_label = raw_class.replace("_", " ")
+
+                detected.append(
+                    DetectedObject(
+                        id=f"{det_label}_{i}_{int(timestamp * 10) % 10000}",
+                        label=det_label,
+                        confidence=round(conf, 3),
+                        bbox=bbox,
+                        direction=direction,
+                        urgency=urgency,
+                        timestamp=timestamp,
+                    )
+                )
+
+            return detected
+
+        except Exception as e:
+            logger.warning("Error communicating with Roboflow inference API: %s", e)
+            return []
+
+
 def get_detector(mock_mode: bool = False) -> BaseObjectDetector:
     """Factory function returning the configured object detector."""
     if mock_mode or settings.mock_mode:
         logger.info("Initializing MockDetector (Mock Mode explicitly active)")
         return MockDetector()
 
-    # In live mode, return the neural detector. Never silently inject MockDetector phantom hazards!
+    # Check for Roboflow hosted YOLO configuration
+    provider = getattr(settings, "yolo_provider", "local").strip().lower()
+    roboflow_key = (
+        getattr(settings, "roboflow_api_key", "") or os.environ.get("ROBOFLOW_API_KEY", "")
+    ).strip()
+
+    if provider == "roboflow" or (roboflow_key and provider != "local"):
+        logger.info("Initializing RoboflowHazardDetector (Hosted Cloud YOLO)...")
+        rf_detector = RoboflowHazardDetector(
+            api_key=roboflow_key,
+            model_id=settings.roboflow_model_id,
+            version=settings.roboflow_version,
+            confidence_threshold=settings.roboflow_confidence,
+            endpoint_url=settings.yolo_model_endpoint,
+        )
+        if rf_detector.is_available:
+            return rf_detector
+        logger.warning(
+            "Roboflow detector requested but configuration is incomplete. Falling back to local YOLODetector."
+        )
+
+    # In live mode with local weights, return the dual-engine neural detector
     return YOLODetector(
         model_path=settings.model_path,
         confidence_threshold=settings.confidence_threshold,
         custom_hazard_model_path=settings.custom_hazard_model_path,
         custom_hazard_confidence_threshold=settings.custom_hazard_confidence_threshold,
     )
+
