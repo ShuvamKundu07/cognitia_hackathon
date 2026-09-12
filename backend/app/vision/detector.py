@@ -17,18 +17,42 @@ import cv2
 
 # Pedestrian-relevant class mapping from generic COCO
 COCO_HAZARD_MAP = {
+    # Pedestrians & Living Hazards
     "person": "pedestrian",
+    "dog": "obstacle",
+    "cat": "obstacle",
+    "horse": "obstacle",
+    "cow": "obstacle",
+    "sheep": "obstacle",
+    # Vehicles & Transit
     "bicycle": "bicycle",
     "car": "vehicle",
     "motorcycle": "motorcycle",
-    "bus": "bus",
-    "truck": "truck",
+    "bus": "vehicle",
+    "truck": "vehicle",
+    "train": "vehicle",
+    # Street Infrastructure
     "traffic light": "traffic_light",
     "stop sign": "traffic_sign",
     "fire hydrant": "obstacle",
+    "parking meter": "obstacle",
     "bench": "obstacle",
-    "dog": "obstacle",
-    "cat": "obstacle",
+    # Everyday Obstacles (Furniture & Tripping hazards)
+    "chair": "obstacle",
+    "couch": "obstacle",
+    "dining table": "obstacle",
+    "bed": "obstacle",
+    "potted plant": "obstacle",
+    "backpack": "obstacle",
+    "suitcase": "obstacle",
+    "handbag": "obstacle",
+    "umbrella": "obstacle",
+    "bottle": "obstacle",
+    "tv": "obstacle",
+    "laptop": "obstacle",
+    "refrigerator": "obstacle",
+    "sink": "obstacle",
+    "toilet": "obstacle",
 }
 
 
@@ -291,7 +315,7 @@ class CustomNeuralHazardDetector:
                 "potholes_curbs.pt",
             ]
             for path in candidates:
-                if not path:
+                if not path or not os.path.exists(path):
                     continue
                 try:
                     logger.info("Attempting to load custom hazard YOLO model from %s...", path)
@@ -308,7 +332,7 @@ class CustomNeuralHazardDetector:
                     logger.debug("Could not load custom hazard model from %s: %s", path, ex)
 
             self.is_available = False
-            logger.info("Custom hazard model weights not found at candidates. Using heuristic fallback.")
+            logger.info("Custom hazard model weights not found at candidates.")
         except ImportError:
             logger.warning("Ultralytics library not installed. Custom hazard model falling back.")
             self.is_available = False
@@ -383,13 +407,14 @@ class CustomNeuralHazardDetector:
                             )
                         )
 
-                if neural_hazards:
-                    return neural_hazards
+                # Return neural hazards directly. If neural model found 0 potholes, the ground is clear!
+                return neural_hazards
             except Exception as e:
                 logger.error("Error running custom neural hazard inference: %s", e)
 
-        # 2. Fallback to heuristic pavement hazard detector if neural model produced no detections or is unavailable
-        if self.fallback_detector:
+        # 2. Fallback to heuristic pavement hazard detector ONLY if neural model is unavailable
+        # AND heuristic detection is explicitly enabled in config
+        if getattr(settings, "enable_heuristic_pavement_detector", False) and self.fallback_detector:
             return self.fallback_detector.detect_pavement_hazards(
                 frame,
                 timestamp=timestamp,
@@ -445,6 +470,8 @@ class YOLODetector(BaseObjectDetector):
                 "yolov8n.pt",
             ]
             for path in candidates:
+                if not path or not os.path.exists(path):
+                    continue
                 try:
                     logger.info("Loading YOLO model from %s...", path)
                     self.model = YOLO(path)
@@ -454,6 +481,17 @@ class YOLODetector(BaseObjectDetector):
                     return
                 except Exception as ex:
                     logger.debug("Could not load from candidate %s: %s", path, ex)
+
+            # Auto-download fallback if candidate file path wasn't found on disk
+            try:
+                logger.info("Local yolov8n.pt file not found. Attempting to load official yolov8n.pt via ultralytics...")
+                self.model = YOLO("yolov8n.pt")
+                self.model_path = "yolov8n.pt"
+                self.is_available = True
+                logger.info("YOLO model successfully initialized via ultralytics auto-download.")
+                return
+            except Exception as ex:
+                logger.warning("Could not auto-download or load official yolov8n.pt: %s", ex)
 
             # If all failed, mark unavailable
             self.is_available = False
@@ -521,10 +559,13 @@ class YOLODetector(BaseObjectDetector):
                         else:
                             urgency = UrgencyLevel.MEDIUM if in_corridor else UrgencyLevel.LOW
 
+                        # Preserve specific object label for everyday obstacles (e.g. "chair", "table", "backpack")
+                        det_label = cls_name.lower().replace("_", " ") if hazard_type == "obstacle" else hazard_type
+
                         detected.append(
                             DetectedObject(
-                                id=f"{hazard_type}_{i}_{int(timestamp * 10) % 10000}",
-                                label=hazard_type,
+                                id=f"{cls_name.lower().replace(' ', '_')}_{i}_{int(timestamp * 10) % 10000}",
+                                label=det_label,
                                 confidence=round(conf, 3),
                                 bbox=bbox,
                                 direction=direction,
@@ -535,10 +576,10 @@ class YOLODetector(BaseObjectDetector):
             except Exception as e:
                 logger.error("Inference exception in YOLODetector: %s", e)
 
-        # 2. Integrate pavement surface hazards (potholes, cracks), strictly excluding any region with people/vehicles
+        # 2. Integrate pavement surface hazards (potholes, cracks), strictly excluding any region with people/vehicles/obstacles
         if self.custom_hazard_detector:
             try:
-                obstacle_bboxes = [d.bbox for d in detected if d.label in ("pedestrian", "vehicle", "obstacle", "bicycle")]
+                obstacle_bboxes = [d.bbox for d in detected if d.label != "pothole"]
                 surface_hazards = self.custom_hazard_detector.detect_pavement_hazards(
                     frame,
                     timestamp=timestamp,
@@ -635,17 +676,13 @@ class MockDetector(BaseObjectDetector):
 def get_detector(mock_mode: bool = False) -> BaseObjectDetector:
     """Factory function returning the configured object detector."""
     if mock_mode or settings.mock_mode:
-        logger.info("Initializing MockDetector (Mock Mode active)")
+        logger.info("Initializing MockDetector (Mock Mode explicitly active)")
         return MockDetector()
 
-    yolo = YOLODetector(
+    # In live mode, return the neural detector. Never silently inject MockDetector phantom hazards!
+    return YOLODetector(
         model_path=settings.model_path,
         confidence_threshold=settings.confidence_threshold,
         custom_hazard_model_path=settings.custom_hazard_model_path,
         custom_hazard_confidence_threshold=settings.custom_hazard_confidence_threshold,
     )
-    has_custom = bool(getattr(getattr(yolo, "custom_hazard_detector", None), "is_available", False))
-    if not yolo.is_available and not has_custom:
-        logger.info("YOLO weights or package unavailable. Initializing MockDetector.")
-        return MockDetector()
-    return yolo

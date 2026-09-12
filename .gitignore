@@ -32,18 +32,16 @@ __pycache__/
 .pytest_cache/
 *.db
 *.sqlite3
-*.pt
+
+# Models
 *.onnx
-models/
+*.pt
+!backend/models/yolov8n.pt
+!backend/models/best.pt
+backend/models/*.jpg
 
-.env
-.env.example
-data
-
-cat >> .gitignore <<'EOF'
-
-# Environment variables
+# Data & Environment
 .env
 *.env
 !.env.example
-EOF
+data/

@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     # Vision & Object Detection
     model_path: str = "models/yolov8n.pt"
     custom_hazard_model_path: str = "models/best.pt"
-    confidence_threshold: float = 0.50
+    confidence_threshold: float = 0.35
     custom_hazard_confidence_threshold: float = 0.30
+    enable_heuristic_pavement_detector: bool = False
     processing_fps: int = 10
     frame_queue_maxsize: int = 1
     stale_frame_drop_ms: int = 250
