@@ -96,7 +96,12 @@ export function useMicrophone({ onAudioChunk, enabled = true, autoStart = false 
 
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (AudioContextClass) {
-        const audioCtx = new AudioContextClass();
+        let audioCtx;
+        try {
+          audioCtx = new AudioContextClass({ sampleRate: 16000 });
+        } catch (_e) {
+          audioCtx = new AudioContextClass();
+        }
         audioContextRef.current = audioCtx;
 
         if (audioCtx.state === 'suspended') {
@@ -130,14 +135,16 @@ export function useMicrophone({ onAudioChunk, enabled = true, autoStart = false 
         };
         updateLevel();
 
-        // 2. ScriptProcessor for raw stereo PCM sample streaming (0.5s chunks)
+        // 2. ScriptProcessor for raw stereo PCM sample streaming (0.5s chunks at 16kHz)
         const bufferSize = 4096;
         const processor = audioCtx.createScriptProcessor(bufferSize, 2, 2);
         processorRef.current = processor;
 
+        const inSampleRate = audioCtx.sampleRate;
         const targetSampleRate = 16000;
-        const downsampleFactor = Math.max(1, Math.round(audioCtx.sampleRate / targetSampleRate));
+        const ratio = inSampleRate / targetSampleRate;
         const samplesPerChunk = targetSampleRate * 0.5; // 8000 samples for 0.5s
+        let phase = 0;
 
         processor.onaudioprocess = (e) => {
           if (!onAudioChunkRef.current) return;
@@ -145,11 +152,28 @@ export function useMicrophone({ onAudioChunk, enabled = true, autoStart = false 
           const left = e.inputBuffer.getChannelData(0);
           const hasRight = e.inputBuffer.numberOfChannels > 1;
           const right = hasRight ? e.inputBuffer.getChannelData(1) : left;
+          const inLen = left.length;
 
-          // Downsample to 16kHz
-          for (let i = 0; i < left.length; i += downsampleFactor) {
-            leftBufferRef.current.push(left[i]);
-            rightBufferRef.current.push(right[i]);
+          if (Math.abs(ratio - 1.0) < 0.01) {
+            for (let i = 0; i < inLen; i++) {
+              leftBufferRef.current.push(left[i]);
+              rightBufferRef.current.push(right[i]);
+            }
+          } else {
+            // High-precision linear interpolation with continuous phase preservation
+            while (phase < inLen) {
+              const idx = Math.floor(phase);
+              const frac = phase - idx;
+              const nextIdx = idx + 1 < inLen ? idx + 1 : idx;
+
+              const l = (1 - frac) * left[idx] + frac * left[nextIdx];
+              const r = (1 - frac) * right[idx] + frac * right[nextIdx];
+
+              leftBufferRef.current.push(l);
+              rightBufferRef.current.push(r);
+              phase += ratio;
+            }
+            phase -= inLen;
           }
 
           if (leftBufferRef.current.length >= samplesPerChunk) {

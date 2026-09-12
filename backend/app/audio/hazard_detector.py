@@ -41,7 +41,7 @@ class AudioHazardDetector:
         self.chunk_size = int(sample_rate * chunk_duration)
         self.model_dir = os.path.abspath(model_dir)
 
-        self.hazard_keywords = ["siren", "horn", "tire squeal", "truck", "motorcycle"]
+        self.hazard_keywords = ["siren", "horn"]
         self.yamnet = None
         self.class_names: List[str] = []
         self.tf = None
@@ -166,58 +166,131 @@ class AudioHazardDetector:
     def _spectral_classify(self, mono_samples: np.ndarray, rms: float) -> tuple[str, float, bool]:
         """High-precision acoustic classifier focused strictly on vehicle warning sounds.
 
-        Rejects ambient room static, HVAC/fan hum, and human speech formants.
-        Detects vehicle warning signals: Vehicle Horn, Emergency Siren, Tire Squeal.
+        Detects vehicle warning signals: Vehicle Horn (single-tone, dual-tone, truck/bus horns)
+        and Emergency Siren (wail sweeps, yelp sweeps, two-tone Hi-Lo).
+        Rejects ambient room static, HVAC/fan hum, keyboard typing, claps, human speech, and transient bursts.
         """
-        if len(mono_samples) < 256 or rms < 0.035:
+        if len(mono_samples) < 256 or rms < 0.015:
             return "NONE (SILENCE)", 0.0, False
 
+        # 1. Transient Click & Decay Rejection
+        peak_val = float(np.max(np.abs(mono_samples)))
+        crest_factor = peak_val / (rms + 1e-6)
+
+        # Subframe envelope analysis (4 subframes of 125ms for a 0.5s chunk)
+        n_sub = 4
+        sub_len = len(mono_samples) // n_sub
+        sub_rms = [
+            float(np.sqrt(np.mean(mono_samples[i * sub_len : (i + 1) * sub_len] ** 2) + 1e-7))
+            for i in range(n_sub)
+        ]
+        active_subs = [r for r in sub_rms if r >= 0.010]
+
+        # Reject isolated transient clicks (<60ms spike with high crest factor)
+        if len(active_subs) <= 1 and crest_factor > 6.0:
+            return "NONE (TRANSIENT)", 0.0, False
+
+        # Short window duration check (25ms windows = 400 samples at 16kHz)
+        win_size = max(64, int(self.sample_rate * 0.025))
+        n_wins = len(mono_samples) // win_size
+        win_rms = [
+            float(np.sqrt(np.mean(mono_samples[i * win_size : (i + 1) * win_size] ** 2)))
+            for i in range(n_wins)
+        ]
+        sustained_wins = [w for w in win_rms if w >= 0.012]
+
+        # 2. Global FFT Frequency Domain Analysis
         fft_vals = np.abs(np.fft.rfft(mono_samples))
         freqs = np.fft.rfftfreq(len(mono_samples), 1.0 / self.sample_rate)
-        total_energy = float(np.sum(fft_vals)) + 1e-6
-        med_energy = float(np.median(fft_vals)) + 1e-6
 
-        # Human vocal pitch fundamental band (85 Hz - 280 Hz)
-        vocal_mask = (freqs >= 85) & (freqs <= 280)
-        vocal_energy = float(np.sum(fft_vals[vocal_mask]))
+        # Acoustic passband (200 - 3500 Hz): normalizes against mic high-pass and anti-aliasing roll-off
+        passband_mask = (freqs >= 200) & (freqs <= 3500)
+        passband_energy = float(np.sum(fft_vals[passband_mask])) + 1e-6
+        passband_median = float(np.median(fft_vals[passband_mask])) + 1e-6
 
-        # --- 1. Vehicle Horn: 350 - 650 Hz (automotive dual/single resonant tones) ---
-        horn_mask = (freqs >= 350) & (freqs <= 650)
+        # Human vocal fundamental band (85 - 260 Hz)
+        vocal_fund_mask = (freqs >= 85) & (freqs <= 260)
+        vocal_fund_energy = float(np.sum(fft_vals[vocal_fund_mask]))
+
+        # Sub-500Hz energy (speech vowels, bass rumble, ambient traffic hum)
+        sub500_mask = freqs < 500
+        sub500_energy = float(np.sum(fft_vals[sub500_mask]))
+
+        # High-frequency band (>3200 Hz)
+        high_mask = freqs > 3200
+        high_energy = float(np.sum(fft_vals[high_mask]))
+
+        # --- 1. Vehicle Horn Analysis: 280 - 720 Hz fundamental (dual-tone, single tone, truck air horns) ---
+        horn_mask = (freqs >= 280) & (freqs <= 720)
         horn_energy = float(np.sum(fft_vals[horn_mask]))
         horn_peak = float(np.max(fft_vals[horn_mask])) if np.any(horn_mask) else 0.0
-        horn_share = horn_energy / total_energy
-        horn_peak_ratio = horn_peak / med_energy
-        pitch_to_horn = vocal_energy / (horn_energy + 1e-6)
+        horn_share_pass = horn_energy / passband_energy
+        horn_peak_ratio = horn_peak / passband_median
 
-        # Genuine vehicle horns have strong tonal resonance (>=18x median)
-        # and concentrated band energy without vocal pitch dominance
-        if horn_share >= 0.14 and horn_peak_ratio >= 18.0 and pitch_to_horn < 0.60:
-            conf = min(0.98, round(0.70 + horn_share * 0.5, 2))
-            return "VEHICLE HORN", conf, True
+        # Automotive horns generate rich harmonics in 720 - 2200 Hz
+        horn_harmonics_mask = (freqs >= 720) & (freqs <= 2200)
+        horn_harm_energy = float(np.sum(fft_vals[horn_harmonics_mask]))
+        pitch_to_horn = vocal_fund_energy / (horn_energy + 1e-6)
 
-        # --- 2. Emergency Siren: 750 - 1750 Hz (ambulance, police, fire wail/yelp) ---
-        siren_mask = (freqs >= 750) & (freqs <= 1750)
+        # --- 2. Emergency Siren Analysis: 650 - 1800 Hz (wail sweeps, yelp sweeps, Hi-Lo sirens) ---
+        siren_mask = (freqs >= 650) & (freqs <= 1800)
         siren_energy = float(np.sum(fft_vals[siren_mask]))
         siren_peak = float(np.max(fft_vals[siren_mask])) if np.any(siren_mask) else 0.0
-        siren_share = siren_energy / total_energy
-        siren_peak_ratio = siren_peak / med_energy
-        pitch_to_siren = vocal_energy / (siren_energy + 1e-6)
+        siren_share_pass = siren_energy / passband_energy
+        siren_peak_ratio = siren_peak / passband_median
 
-        if siren_share >= 0.18 and siren_peak_ratio >= 20.0 and pitch_to_siren < 0.50:
-            conf = min(0.98, round(0.75 + siren_share * 0.4, 2))
+        sub500_to_siren = sub500_energy / (siren_energy + 1e-6)
+        vocal_to_siren = vocal_fund_energy / (siren_energy + 1e-6)
+
+        # Subframe spectral peak tracking (critical for sweeping wail and yelp sirens)
+        siren_sub_peaks = []
+        for i in range(n_sub):
+            sub_chunk = mono_samples[i * sub_len : (i + 1) * sub_len]
+            if len(sub_chunk) >= 64:
+                sub_fft = np.abs(np.fft.rfft(sub_chunk))
+                sub_freqs = np.fft.rfftfreq(len(sub_chunk), 1.0 / self.sample_rate)
+                sub_pass_mask = (sub_freqs >= 200) & (sub_freqs <= 3500)
+                sub_pass_med = float(np.median(sub_fft[sub_pass_mask])) + 1e-6 if np.any(sub_pass_mask) else 1e-6
+                sub_s_mask = (sub_freqs >= 650) & (sub_freqs <= 1800)
+                if np.any(sub_s_mask):
+                    sub_s_vals = sub_fft[sub_s_mask]
+                    sub_max = float(np.max(sub_s_vals))
+                    siren_sub_peaks.append(sub_max / sub_pass_med)
+
+        avg_siren_sub_peak = float(np.mean(siren_sub_peaks)) if siren_sub_peaks else 0.0
+
+        # Classification decision rules:
+        # A. Emergency Siren:
+        # High concentration in passband 650-1800 Hz (>= 35%), low energy below 500 Hz, absence of vocal chord fundamental,
+        # and sharp subframe/global tonal resonance relative to passband median
+        is_siren = (
+            siren_share_pass >= 0.35
+            and sub500_to_siren < 0.60
+            and vocal_to_siren < 0.25
+            and (siren_peak_ratio >= 8.0 or avg_siren_sub_peak >= 7.0)
+        )
+
+        # B. Vehicle Horn:
+        # Strong resonant band in 280-720 Hz (>= 22% of passband or fundamental + harmonics >= 50% of passband),
+        # peak prominence >= 8x passband median, low vocal fundamental (<0.35 of horn band to reject speech),
+        # sustained duration (>=5 windows = 125ms)
+        is_horn = (
+            (
+                horn_share_pass >= 0.22
+                or (horn_energy + horn_harm_energy) / passband_energy >= 0.50
+            )
+            and horn_peak_ratio >= 8.0
+            and pitch_to_horn < 0.35
+            and sub500_energy > vocal_fund_energy * 1.3
+            and len(sustained_wins) >= 5
+        )
+
+        if is_siren:
+            conf = min(0.98, round(0.72 + max(siren_share_pass, min(0.6, siren_peak_ratio / 50.0)) * 0.35, 2))
             return "EMERGENCY SIREN", conf, True
-
-        # --- 3. Tire Squeal: 2200 - 5000 Hz (emergency braking friction screech) ---
-        squeal_mask = (freqs >= 2200) & (freqs <= 5000)
-        squeal_energy = float(np.sum(fft_vals[squeal_mask]))
-        squeal_peak = float(np.max(fft_vals[squeal_mask])) if np.any(squeal_mask) else 0.0
-        squeal_share = squeal_energy / total_energy
-        squeal_peak_ratio = squeal_peak / med_energy
-        pitch_to_squeal = vocal_energy / (squeal_energy + 1e-6)
-
-        if squeal_share >= 0.20 and squeal_peak_ratio >= 20.0 and pitch_to_squeal < 0.35:
-            conf = min(0.95, round(0.70 + squeal_share * 0.4, 2))
-            return "TIRE SQUEAL", conf, True
+        elif is_horn:
+            conf = min(0.98, round(0.70 + max(horn_share_pass, min(0.6, horn_peak_ratio / 50.0)) * 0.45, 2))
+            return "VEHICLE HORN", conf, True
 
         return "NONE", 0.0, False
 
@@ -263,10 +336,10 @@ class AudioHazardDetector:
                 approaching = True
 
         # ==========================================
-        # FIX: NOISE GATE TO PREVENT HALLUCINATIONS
+        # NOISE GATE & SENSITIVITY CALIBRATION
         # ==========================================
-        MIN_VOLUME_RMS = 0.035  # Ignore audio below this volume (pure background static & quiet speech)
-        CONFIDENCE_THRESHOLD = 0.40  # Require 40% certainty (up from 15%)
+        MIN_VOLUME_RMS = 0.015  # Calibrated noise floor (~ -36 dBFS)
+        CONFIDENCE_THRESHOLD = 0.70  # Require 70% certainty to reject non-hazard sounds
 
         if rms_total < MIN_VOLUME_RMS:
             self.state["hazard_detected"] = False
@@ -277,7 +350,7 @@ class AudioHazardDetector:
             self.state["rms"] = round(rms_total, 4)
             return
 
-        # --- 3. Offline YAMNet Classification ---
+        # --- 3. Offline YAMNet or Spectral Classification ---
         mono_chunk = (
             np.mean(indata, axis=1, dtype=np.float32)
             if channels > 1
@@ -321,15 +394,21 @@ class AudioHazardDetector:
             self.state["rms"] = round(rms_total, 4)
             self.state["timestamp"] = time.time()
 
-
-    def process_audio_chunk(self, raw_audio: Any, timestamp: float = 0.0) -> Optional[AudioEvent]:
+    def process_audio_chunk(
+        self,
+        raw_audio: Any,
+        timestamp: float = 0.0,
+        channels: int = 2,
+    ) -> Optional[AudioEvent]:
         """Classifies incoming decoded or encoded audio data from WebSocket."""
-        samples = self.preprocessor.decode_audio_chunk(raw_audio)
+        samples = self.preprocessor.decode_audio_chunk(raw_audio, channels=channels)
         if samples is None or len(samples) < 256:
             return None
 
+        # Auto-enable detector when explicit audio chunk is received
+        self.enabled = True
         state = self._process_samples(samples)
-        if state["hazard_detected"]:
+        if state.get("hazard_detected"):
             return self.to_audio_event(timestamp=timestamp)
         return None
 

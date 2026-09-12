@@ -309,7 +309,89 @@ class SoundCueEngine {
       console.warn('Resolved tone failed:', e);
     }
   }
+
+  /**
+   * Synthesizes a realistic dual-tone automotive vehicle horn (415 Hz + 505 Hz).
+   * Generates audible testing feedback and feeds microphone input.
+   *
+   * @param {number} durationSeconds Duration of horn honk (default 0.65s)
+   */
+  playHornSound(durationSeconds = 0.65) {
+    if (!this.enabled) return;
+    this.init();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      const dur = Math.max(0.2, Math.min(2.0, durationSeconds));
+
+      // Dual automotive horn fundamentals: Low (415 Hz) & High (505 Hz)
+      const freqs = [415, 505];
+      freqs.forEach((freq) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        // Sawtooth wave provides realistic automotive horn diaphragm harmonics
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, now);
+
+        // Attack - Sustain - Release envelope
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.08, now + 0.02);
+        gain.gain.setValueAtTime(0.08, now + dur - 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + dur);
+      });
+    } catch (e) {
+      console.warn('Synthesized horn sound failed:', e);
+    }
+  }
+
+  /**
+   * Synthesizes a realistic emergency vehicle siren wail sweep (750 Hz -> 1450 Hz -> 750 Hz).
+   *
+   * @param {number} durationSeconds Duration of siren sweep (default 1.2s)
+   */
+  playSirenSound(durationSeconds = 1.2) {
+    if (!this.enabled) return;
+    this.init();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      const dur = Math.max(0.4, Math.min(3.0, durationSeconds));
+      const half = dur / 2;
+
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(750, now);
+      osc.frequency.linearRampToValueAtTime(1450, now + half);
+      osc.frequency.linearRampToValueAtTime(750, now + dur);
+
+      // Smooth envelope
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.09, now + 0.04);
+      gain.gain.setValueAtTime(0.09, now + dur - 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + dur);
+    } catch (e) {
+      console.warn('Synthesized siren sound failed:', e);
+    }
+  }
 }
 
 export const soundCues = new SoundCueEngine();
+
 

@@ -16,7 +16,7 @@ class AudioPreprocessor:
     def __init__(self, sample_rate: int = 16000):
         self.sample_rate = sample_rate
 
-    def decode_audio_chunk(self, raw_data: Any) -> Optional[np.ndarray]:
+    def decode_audio_chunk(self, raw_data: Any, channels: int = 1) -> Optional[np.ndarray]:
         """Decodes audio chunk (WAV, int16/float32 PCM, base64, list, numpy) into float32 array [-1.0, 1.0]."""
         if raw_data is None:
             return None
@@ -26,6 +26,8 @@ class AudioPreprocessor:
             arr = raw_data.astype(np.float32)
             if np.max(np.abs(arr)) > 1.5:
                 arr = arr / 32768.0
+            if channels == 2 and arr.ndim == 1 and arr.size % 2 == 0:
+                arr = arr.reshape(-1, 2)
             return arr
 
         # 2. JSON list of float samples
@@ -35,6 +37,8 @@ class AudioPreprocessor:
             arr = np.array(raw_data, dtype=np.float32)
             if np.max(np.abs(arr)) > 1.5:
                 arr = arr / 32768.0
+            if channels == 2 and arr.ndim == 1 and arr.size % 2 == 0:
+                arr = arr.reshape(-1, 2)
             return arr
 
         try:
@@ -56,11 +60,16 @@ class AudioPreprocessor:
                     import scipy.io.wavfile as wavfile
                     _, data = wavfile.read(io.BytesIO(audio_bytes))
                     if data.dtype == np.int16:
-                        return data.astype(np.float32) / 32768.0
+                        arr = data.astype(np.float32) / 32768.0
                     elif data.dtype == np.float32:
-                        return data
+                        arr = data
                     elif data.dtype == np.uint8:
-                        return (data.astype(np.float32) - 128.0) / 128.0
+                        arr = (data.astype(np.float32) - 128.0) / 128.0
+                    else:
+                        arr = data.astype(np.float32)
+                    if channels == 2 and arr.ndim == 1 and arr.size % 2 == 0:
+                        arr = arr.reshape(-1, 2)
+                    return arr
                 except Exception as wav_err:
                     logger.debug("WAV parser fallback: %s", wav_err)
 
@@ -68,6 +77,8 @@ class AudioPreprocessor:
             raw_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
             if raw_int16.size > 0:
                 float_samples = raw_int16.astype(np.float32) / 32768.0
+                if channels == 2 and float_samples.size % 2 == 0:
+                    float_samples = float_samples.reshape(-1, 2)
                 return float_samples
 
             return None

@@ -182,14 +182,15 @@ class MockBackendService {
       timestamp: Date.now(),
     });
 
-    if (this.frameCounter % 40 === 10) {
-      this.emit('audio_event', {
-        sound: 'Car Horn',
-        direction: 'Right',
-        confidence: 0.92,
-        timestamp: Date.now(),
-      });
-    }
+  }
+
+  triggerAudioEvent(sound = 'Car Horn', direction = 'Right', confidence = 0.92) {
+    this.emit('audio_event', {
+      sound,
+      direction,
+      confidence,
+      timestamp: Date.now(),
+    });
   }
 
   triggerCriticalCar() {

@@ -5,6 +5,7 @@ from app.assistant.conversation import ConversationManager
 from app.assistant.reference_resolution import ReferenceResolver
 from app.assistant.scene_memory import SceneMemory
 from app.hazards.models import (
+    AudioEvent,
     BoundingBox,
     DetectedObject,
     Direction,
@@ -155,3 +156,43 @@ def test_safety_controller_preempts_gene():
     arbitrated2 = controller.arbitrate_alert(high_alert)
     assert arbitrated2.interrupt is True
     assert cm.state == "INTERRUPTED"
+
+
+@pytest.mark.asyncio
+async def test_gene_surroundings_and_audio_queries():
+    """Verify assistant inspects both camera vision and audio detection when asked about surroundings or sounds."""
+    memory = SceneMemory()
+    cm = ConversationManager(scene_memory=memory)
+
+    audio_evt = AudioEvent(
+        sound="Vehicle Horn",
+        direction="Right",
+        confidence=0.94,
+        timestamp=int(1000 * 1000),
+    )
+
+    pothole = TrackedHazard(
+        hazard_id="pothole_42",
+        track_id="42",
+        hazard_type="pothole",
+        label="pothole",
+        direction=Direction.AHEAD,
+        path_intersection_score=0.8,
+        risk_score=0.8,
+        urgency=UrgencyLevel.HIGH,
+    )
+
+    # 1. Ask what do you hear
+    reply_audio, _ = await cm.handle_query("What do you hear?", current_frame=None, active_hazards=[], audio_event=audio_evt)
+    assert "Vehicle Horn" in reply_audio
+    assert "Right" in reply_audio
+
+    # 2. Ask to describe surroundings with camera hazard and sound
+    reply_surroundings, _ = await cm.handle_query(
+        "Describe my surroundings",
+        current_frame=None,
+        active_hazards=[pothole],
+        audio_event=audio_evt,
+    )
+    assert "pothole" in reply_surroundings.lower()
+    assert "vehicle horn" in reply_surroundings.lower()

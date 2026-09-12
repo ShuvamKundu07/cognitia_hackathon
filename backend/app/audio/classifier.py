@@ -21,6 +21,7 @@ class BaseAudioClassifier(ABC):
         self,
         raw_audio: Any,
         timestamp: float = 0.0,
+        channels: int = 2,
     ) -> Optional[AudioEvent]:
         """Classifies incoming audio chunk into environmental hazard event."""
         pass
@@ -40,69 +41,45 @@ class AcousticClassifier(BaseAudioClassifier):
         self.preprocessor = AudioPreprocessor(sample_rate=sample_rate)
         self.direction_estimator = AudioDirectionEstimator(sample_rate=sample_rate)
         self.neural_model = None  # Ready for YAMNet / PANNs weights
+        from app.audio.hazard_detector import AudioHazardDetector
+
+        self.detector = AudioHazardDetector(sample_rate=sample_rate)
 
     def classify(
         self,
         raw_audio: Any,
         timestamp: float = 0.0,
+        channels: int = 2,
     ) -> Optional[AudioEvent]:
         if timestamp <= 0.0:
             timestamp = time.time()
 
-        samples = self.preprocessor.decode_audio_chunk(raw_audio)
-        if samples is None or len(samples) < 512:
+        samples = self.preprocessor.decode_audio_chunk(raw_audio, channels=channels)
+        if samples is None or len(samples) < 256:
             return None
 
-        # Check if audio is below silence floor (ignore ambient room and quiet speech)
-        rms = self.preprocessor.calculate_rms_energy(samples)
-        if rms < 0.035:
+        mono_samples = (
+            np.mean(samples, axis=1, dtype=np.float32)
+            if samples.ndim > 1 and samples.shape[1] > 1
+            else samples.ravel().astype(np.float32)
+        )
+        rms = float(np.sqrt(np.mean(mono_samples**2) + 1e-7))
+        sound_type, conf, is_hazard = self.detector._spectral_classify(mono_samples, rms)
+        if not is_hazard:
             return None
 
-        # 1. FFT Frequency Domain Analysis
-        fft_vals = np.abs(np.fft.rfft(samples))
-        freqs = np.fft.rfftfreq(len(samples), 1.0 / self.sample_rate)
-        total_spectral = max(1e-5, float(np.sum(fft_vals)))
-        med_spectral = max(1e-5, float(np.median(fft_vals)))
+        sound_label = "Vehicle Horn" if "HORN" in sound_type else "Emergency Siren" if "SIREN" in sound_type else sound_type.title()
 
-        # Vocal pitch fundamental band (85 - 280 Hz)
-        vocal_energy = float(np.sum(fft_vals[(freqs >= 85) & (freqs <= 280)]))
-
-        # Spectral bands:
-        # Horns: prominent fundamental between 350Hz - 650Hz
-        # Sirens: prominent sweeps between 750Hz - 1750Hz
-        horn_mask = (freqs >= 350) & (freqs <= 650)
-        siren_mask = (freqs >= 750) & (freqs <= 1750)
-
-        horn_band = float(np.sum(fft_vals[horn_mask]))
-        horn_peak = float(np.max(fft_vals[horn_mask])) if np.any(horn_mask) else 0.0
-        horn_ratio = horn_band / total_spectral
-        horn_peak_ratio = horn_peak / med_spectral
-
-        siren_band = float(np.sum(fft_vals[siren_mask]))
-        siren_peak = float(np.max(fft_vals[siren_mask])) if np.any(siren_mask) else 0.0
-        siren_ratio = siren_band / total_spectral
-        siren_peak_ratio = siren_peak / med_spectral
-
-        sound_label = None
-        confidence = 0.0
-
-        if horn_ratio >= 0.14 and horn_peak_ratio >= 18.0 and (vocal_energy / (horn_band + 1e-6) < 0.60):
-            sound_label = "Vehicle Horn"
-            confidence = min(0.98, round(0.70 + horn_ratio * 0.5, 2))
-        elif siren_ratio >= 0.18 and siren_peak_ratio >= 20.0 and (vocal_energy / (siren_band + 1e-6) < 0.50):
-            sound_label = "Emergency Siren"
-            confidence = min(0.98, round(0.75 + siren_ratio * 0.4, 2))
-
-        if not sound_label:
-            return None
-
-        # Determine direction (UNKNOWN for mono input)
-        direction = self.direction_estimator.estimate_direction(samples, num_channels=1)
+        num_ch = samples.shape[1] if samples.ndim > 1 else 1
+        direction = self.direction_estimator.estimate_direction(samples, num_channels=num_ch)
+        dir_str = direction.value.capitalize()
+        if dir_str == "Unknown":
+            dir_str = "Center"
 
         return AudioEvent(
             sound=sound_label,
-            direction=direction.value.capitalize(),
-            confidence=confidence,
+            direction=dir_str,
+            confidence=conf,
             timestamp=int(timestamp * 1000),
         )
 
@@ -110,19 +87,24 @@ class AcousticClassifier(BaseAudioClassifier):
 class MockAudioClassifier(BaseAudioClassifier):
     """Deterministic mock acoustic classifier for development, tests, and demo scenarios."""
 
-    def __init__(self):
+    def __init__(self, auto_simulate: bool = False):
         self.call_count = 0
+        self.auto_simulate = auto_simulate
 
     def classify(
         self,
         raw_audio: Any,
         timestamp: float = 0.0,
+        channels: int = 2,
     ) -> Optional[AudioEvent]:
         if timestamp <= 0.0:
             timestamp = time.time()
         self.call_count += 1
 
-        # Simulate acoustic events at intervals
+        if not self.auto_simulate:
+            return None
+
+        # Simulate acoustic events at intervals only if explicitly requested
         if self.call_count % 35 == 10:
             return AudioEvent(
                 sound="Vehicle Horn",
@@ -152,8 +134,9 @@ class AudioHazardClassifier(BaseAudioClassifier):
         self,
         raw_audio: Any,
         timestamp: float = 0.0,
+        channels: int = 2,
     ) -> Optional[AudioEvent]:
-        return self.detector.process_audio_chunk(raw_audio, timestamp=timestamp)
+        return self.detector.process_audio_chunk(raw_audio, timestamp=timestamp, channels=channels)
 
 
 def get_audio_classifier(

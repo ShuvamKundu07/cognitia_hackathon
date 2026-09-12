@@ -201,6 +201,29 @@ def test_rejection_of_speech_and_ambient_noise():
     st_pink = detector._process_samples(pink)
     assert st_pink["hazard_detected"] is False
 
+    # 3. Keyboard typing transient clicks
+    keys = np.zeros(8000, dtype=np.float32)
+    for pos in [500, 2000, 4500, 6000]:
+        keys[pos:pos + 120] = 0.20 * np.random.randn(120)
+    st_keys = detector._process_samples(keys)
+    assert st_keys["hazard_detected"] is False
+
+    # 4. High-pitched speaking voice (F0 ~260 Hz with harmonics)
+    voice_high = (
+        0.08 * np.sin(2 * np.pi * 260 * t)
+        + 0.07 * np.sin(2 * np.pi * 520 * t)
+        + 0.05 * np.sin(2 * np.pi * 780 * t)
+        + 0.04 * np.sin(2 * np.pi * 1040 * t)
+        + 0.03 * np.sin(2 * np.pi * 1300 * t)
+    ).astype(np.float32)
+    st_vhigh = detector._process_samples(voice_high)
+    assert st_vhigh["hazard_detected"] is False
+
+    # 5. Sibilant high-frequency speech or typing noise (formerly false-positive tire squeal)
+    sibilant = (0.10 * np.sin(2 * np.pi * 3200 * t) + 0.05 * np.random.randn(8000)).astype(np.float32)
+    st_sib = detector._process_samples(sibilant)
+    assert st_sib["hazard_detected"] is False
+
 
 def test_stable_acoustic_hazard_id_and_cooldown():
     """Verify acoustic hazards use stable IDs and alert generator prevents repetitive alert spam."""
@@ -226,4 +249,171 @@ def test_stable_acoustic_hazard_id_and_cooldown():
     # Second alert 0.5s later must be suppressed by cooldown (no repeated spamming!)
     alert2 = alert_gen.generate_alert(hazard2, timestamp=t0 + 0.5)
     assert alert2 is None
+
+
+def test_stereo_chunk_processing_and_direction():
+    """Verify stereo interleaved audio data is correctly parsed and yields directional estimation."""
+    detector = AudioHazardDetector(sample_rate=16000)
+    samples = 8000
+    t = np.linspace(0, 0.5, samples, endpoint=False)
+
+    # Right side has loud horn signal (440 Hz), left side is quiet
+    left = (0.01 * np.ones(samples, dtype=np.float32))
+    right = (0.25 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+
+    # Interleave to stereo PCM
+    stereo_interleaved = np.empty(samples * 2, dtype=np.float32)
+    stereo_interleaved[0::2] = left
+    stereo_interleaved[1::2] = right
+
+    # Convert to int16 bytes
+    int16_data = (stereo_interleaved * 32767).astype(np.int16).tobytes()
+
+    event = detector.process_audio_chunk(int16_data, timestamp=1.0, channels=2)
+    assert event is not None
+    assert "Horn" in event.sound
+    assert event.direction == "Right"
+
+
+def test_real_world_dual_tone_and_truck_horns():
+    """Verify detection of dual-tone automotive chords and truck air horns."""
+    detector = AudioHazardDetector(sample_rate=16000)
+    samples = 8000
+    t = np.linspace(0, 0.5, samples, endpoint=False)
+
+    # 1. Dual-tone car horn (415 Hz + 505 Hz with realistic harmonics)
+    dual_horn = 0.12 * np.sin(2 * np.pi * 415 * t) + 0.10 * np.sin(2 * np.pi * 505 * t)
+    dual_horn += 0.05 * np.sin(2 * np.pi * 830 * t) + 0.04 * np.sin(2 * np.pi * 1010 * t)
+    dual_horn += 0.01 * np.random.randn(samples)
+    st_dual = detector._process_samples(dual_horn.astype(np.float32))
+    assert st_dual["hazard_detected"] is True
+    assert "HORN" in st_dual["hazard_type"]
+    assert st_dual["score"] >= 0.80
+
+    # 2. Heavy truck air horn (310 Hz + 380 Hz)
+    truck_horn = 0.15 * np.sin(2 * np.pi * 310 * t) + 0.10 * np.sin(2 * np.pi * 380 * t)
+    truck_horn += 0.06 * np.sin(2 * np.pi * 620 * t) + 0.01 * np.random.randn(samples)
+    st_truck = detector._process_samples(truck_horn.astype(np.float32))
+    assert st_truck["hazard_detected"] is True
+    assert "HORN" in st_truck["hazard_type"]
+
+    # 3. Short tap horn (250 ms duration)
+    short_horn = np.zeros(samples, dtype=np.float32)
+    idx_s, idx_e = int(0.15 * 16000), int(0.40 * 16000)
+    short_horn[idx_s:idx_e] = 0.18 * np.sin(2 * np.pi * 440 * t[idx_s:idx_e])
+    short_horn += 0.005 * np.random.randn(samples)
+    st_short = detector._process_samples(short_horn.astype(np.float32))
+    assert st_short["hazard_detected"] is True
+    assert "HORN" in st_short["hazard_type"]
+
+
+def test_real_world_sirens_wail_yelp_and_hilo():
+    """Verify detection of sweeping wails, fast yelps, and alternating Hi-Lo emergency sirens."""
+    detector = AudioHazardDetector(sample_rate=16000)
+    samples = 8000
+    t = np.linspace(0, 0.5, samples, endpoint=False)
+
+    # 1. Continuous Wail Siren Sweep (700 Hz -> 1400 Hz)
+    sweep_wail = 700 + 700 * (t / 0.5)
+    wail_sig = 0.18 * np.sin(2 * np.pi * np.cumsum(sweep_wail) / 16000) + 0.01 * np.random.randn(samples)
+    st_wail = detector._process_samples(wail_sig.astype(np.float32))
+    assert st_wail["hazard_detected"] is True
+    assert "SIREN" in st_wail["hazard_type"]
+    assert st_wail["score"] >= 0.85
+
+    # 2. Rapid Yelp Siren Sweep (700 -> 1500 -> 700 Hz)
+    sweep_yelp = 700 + 800 * np.abs(np.sin(2 * np.pi * 3 * t))
+    yelp_sig = 0.18 * np.sin(2 * np.pi * np.cumsum(sweep_yelp) / 16000) + 0.01 * np.random.randn(samples)
+    st_yelp = detector._process_samples(yelp_sig.astype(np.float32))
+    assert st_yelp["hazard_detected"] is True
+    assert "SIREN" in st_yelp["hazard_type"]
+
+    # 3. Two-Tone European Hi-Lo Ambulance Siren (700 Hz / 960 Hz alternating)
+    hilo = np.zeros(samples, dtype=np.float32)
+    hilo[:samples // 2] = 0.18 * np.sin(2 * np.pi * 700 * t[:samples // 2])
+    hilo[samples // 2:] = 0.18 * np.sin(2 * np.pi * 960 * t[samples // 2:])
+    hilo += 0.01 * np.random.randn(samples)
+    st_hilo = detector._process_samples(hilo.astype(np.float32))
+    assert st_hilo["hazard_detected"] is True
+    assert "SIREN" in st_hilo["hazard_type"]
+
+
+def test_quiet_sound_detection_above_calibrated_floor():
+    """Verify quiet horns and sirens (RMS ~ 0.018) are detected above the calibrated floor."""
+    detector = AudioHazardDetector(sample_rate=16000)
+    samples = 8000
+    t = np.linspace(0, 0.5, samples, endpoint=False)
+
+    # Quiet siren (RMS ~ 0.018, -35 dBFS)
+    quiet_siren = (0.025 * np.sin(2 * np.pi * 1100 * t) + 0.003 * np.random.randn(samples)).astype(np.float32)
+    st_siren = detector._process_samples(quiet_siren)
+    assert st_siren["hazard_detected"] is True
+    assert "SIREN" in st_siren["hazard_type"]
+
+    # Quiet horn (RMS ~ 0.018)
+    quiet_horn = (0.025 * np.sin(2 * np.pi * 440 * t) + 0.003 * np.random.randn(samples)).astype(np.float32)
+    st_horn = detector._process_samples(quiet_horn)
+    assert st_horn["hazard_detected"] is True
+    assert "HORN" in st_horn["hazard_type"]
+
+
+def test_acoustic_classifier_integration():
+    """Verify AcousticClassifier adapter detects horns and sirens."""
+    from app.audio.classifier import AcousticClassifier
+
+    classifier = AcousticClassifier(sample_rate=16000)
+    samples = 8000
+    t = np.linspace(0, 0.5, samples, endpoint=False)
+
+    # Horn event
+    horn = (0.20 * np.sin(2 * np.pi * 440 * t) + 0.01 * np.random.randn(samples)).astype(np.float32)
+    evt_horn = classifier.classify(horn, timestamp=10.0, channels=1)
+    assert evt_horn is not None
+    assert "Horn" in evt_horn.sound
+    assert evt_horn.confidence >= 0.70
+
+    # Siren event
+    sweep = 700 + 700 * (t / 0.5)
+    siren = (0.20 * np.sin(2 * np.pi * np.cumsum(sweep) / 16000) + 0.01 * np.random.randn(samples)).astype(np.float32)
+    evt_siren = classifier.classify(siren, timestamp=11.0, channels=1)
+    assert evt_siren is not None
+    assert "Siren" in evt_siren.sound
+    assert evt_siren.confidence >= 0.75
+
+
+def test_filtered_room_noise_zero_false_positives():
+    """Verify ambient room noise with typical microphone frequency roll-off produces 0 false positives."""
+    detector = AudioHazardDetector(sample_rate=16000)
+    samples = 8000
+    freqs = np.fft.rfftfreq(samples, 1.0 / 16000)
+
+    # Simulate realistic laptop microphone filtering (high-pass < 200 Hz, low-pass > 3500 Hz)
+    filter_curve = np.ones_like(freqs)
+    filter_curve[freqs < 200] *= 0.05
+    filter_curve[freqs > 3500] *= 0.05
+
+    for seed in range(50):
+        np.random.seed(seed)
+        fft_rand = np.random.randn(samples // 2 + 1) + 1j * np.random.randn(samples // 2 + 1)
+        fft_filtered = fft_rand * filter_curve
+        noise = np.fft.irfft(fft_filtered, n=samples).astype(np.float32)
+        # Scale to typical room microphone noise levels (RMS 0.018 - 0.035)
+        target_rms = 0.018 + (seed % 5) * 0.004
+        noise = (noise / (np.sqrt(np.mean(noise**2)) + 1e-7)) * target_rms
+
+        st = detector._process_samples(noise)
+        assert st["hazard_detected"] is False, f"False positive on seed {seed} with RMS {target_rms:.3f}: {st['hazard_type']}"
+        assert detector.to_audio_event() is None
+
+
+def test_mock_audio_classifier_no_auto_spam():
+    """Verify MockAudioClassifier does not emit unprompted audio events by default."""
+    from app.audio.classifier import MockAudioClassifier
+
+    classifier = MockAudioClassifier(auto_simulate=False)
+    for i in range(100):
+        evt = classifier.classify(None, timestamp=float(i))
+        assert evt is None
+
+
 

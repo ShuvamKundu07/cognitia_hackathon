@@ -18,6 +18,7 @@ class ReferenceResolver:
         active_hazards: List[TrackedHazard],
         last_target_id: Optional[str] = None,
         dialogue_history: Optional[List[Dict[str, Any]]] = None,
+        audio_event: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Resolves natural language spatial references to physical scene entities."""
         q = (query or "").strip().lower()
@@ -179,7 +180,56 @@ class ReferenceResolver:
                     "response": f"The vehicle on your {v.direction.value} is {motion_desc}.",
                 }
 
-        # 7. General Query (Fallback to LLM)
+        # 7. Acoustic / Audio Inquiries ("Do you hear anything?", "What was that sound?", "Any siren or horn?")
+        if any(term in q for term in ("hear", "sound", "noise", "horn", "siren", "listen")):
+            if audio_event and hasattr(audio_event, "sound"):
+                sound_name = getattr(audio_event, "sound", "acoustic hazard")
+                sound_dir = getattr(audio_event, "direction", "center")
+                return {
+                    "intent": "QUERY_AUDIO",
+                    "resolved": True,
+                    "target_object_id": None,
+                    "response": f"I hear {sound_name} on your {sound_dir}.",
+                }
+            return {
+                "intent": "QUERY_AUDIO",
+                "resolved": True,
+                "target_object_id": None,
+                "response": "No warning sounds detected right now. Environment is quiet.",
+            }
+
+        # 8. Surroundings / Environment Inspection ("Describe surroundings", "What's around me?", "What do you see?")
+        if any(term in q for term in ("surroundings", "around me", "what is around", "what's around", "what do you see", "look around", "inspect surroundings", "environment", "where am i")):
+            parts = []
+            if active_hazards:
+                hazard_descs = [f"{h.label} on your {h.direction.value}" for h in active_hazards[:3]]
+                parts.append(f"I observe {', '.join(hazard_descs)}")
+            elif scene_memory:
+                recent = scene_memory.get_recent_objects_summary()
+                if recent:
+                    labels = [o.get("label", "item") for o in recent[:3]]
+                    parts.append(f"I observe {', '.join(labels)}")
+            if audio_event and hasattr(audio_event, "sound"):
+                sound_name = getattr(audio_event, "sound", "")
+                sound_dir = getattr(audio_event, "direction", "")
+                if sound_name:
+                    parts.append(f"I hear {sound_name} on your {sound_dir}")
+
+            if parts:
+                return {
+                    "intent": "QUERY_SURROUNDINGS",
+                    "resolved": True,
+                    "target_object_id": None,
+                    "response": ". ".join(parts) + ". Walking corridor is monitored.",
+                }
+            return {
+                "intent": "QUERY_SURROUNDINGS",
+                "resolved": True,
+                "target_object_id": None,
+                "response": "Your surroundings appear clear and quiet. Walking corridor is monitored.",
+            }
+
+        # 9. General Query (Fallback to LLM)
         return {
             "intent": "GENERAL_CONVERSATION",
             "resolved": False,

@@ -40,8 +40,12 @@ export function executeVoiceCommand(rawText, context = {}) {
   // 1. Camera: Turn On / Start Camera
   if (
     /^(?:turn\s+on|start|open|enable)\s+(?:the\s+)?camera(?:\s+sensor|\s+feed)?$/i.test(cmd) ||
+    /^(?:turn\s+)?(?:the\s+)?camera\s+(?:on|start|open|enable)$/i.test(cmd) ||
     cmd === 'camera on' ||
     cmd === 'turn camera on' ||
+    cmd === 'start camera' ||
+    cmd === 'open camera' ||
+    cmd === 'enable camera' ||
     cmd === 'start detection' ||
     cmd === 'start detection camera' ||
     cmd === 'retry camera access'
@@ -59,8 +63,12 @@ export function executeVoiceCommand(rawText, context = {}) {
   // 2. Camera: Turn Off / Stop Camera
   if (
     /^(?:turn\s+off|stop|close|disable)\s+(?:the\s+)?camera(?:\s+sensor|\s+feed)?$/i.test(cmd) ||
+    /^(?:turn\s+)?(?:the\s+)?camera\s+(?:off|stop|close|disable)$/i.test(cmd) ||
     cmd === 'camera off' ||
     cmd === 'turn camera off' ||
+    cmd === 'stop camera' ||
+    cmd === 'close camera' ||
+    cmd === 'disable camera' ||
     cmd === 'stop detection' ||
     cmd === 'stop detection camera'
   ) {
@@ -83,10 +91,19 @@ export function executeVoiceCommand(rawText, context = {}) {
     return { handled: true, response: 'Camera switching is not available.' };
   }
 
-  // 4. Microphone: Mute
+  // 4. Microphone: Mute / Turn Off
   if (
-    /^(?:mute|turn\s+off|stop|disable)\s+(?:the\s+)?(?:microphone|mic)$/i.test(cmd) ||
-    cmd === 'mute'
+    /^(?:mute|turn\s+off|stop|disable)\s+(?:the\s+)?(?:microphone|micro\s*phone|mic)$/i.test(cmd) ||
+    /^(?:turn\s+)?(?:the\s+)?(?:microphone|micro\s*phone|mic)\s+(?:off|stop|disable|mute)$/i.test(cmd) ||
+    cmd === 'mute' ||
+    cmd === 'mic off' ||
+    cmd === 'microphone off' ||
+    cmd === 'micro phone off' ||
+    cmd === 'turn mic off' ||
+    cmd === 'turn microphone off' ||
+    cmd === 'turn micro phone off' ||
+    cmd === 'stop microphone' ||
+    cmd === 'stop mic'
   ) {
     if (context.isMuted) {
       return { handled: true, response: 'Microphone is already muted.' };
@@ -97,10 +114,21 @@ export function executeVoiceCommand(rawText, context = {}) {
     }
   }
 
-  // 5. Microphone: Unmute / Start
+  // 5. Microphone: Unmute / Start / Turn On
   if (
-    /^(?:unmute|turn\s+on|start|enable)\s+(?:the\s+)?(?:microphone|mic)$/i.test(cmd) ||
-    cmd === 'unmute'
+    /^(?:unmute|turn\s+on|start|enable|open)\s+(?:the\s+)?(?:microphone|micro\s*phone|mic)$/i.test(cmd) ||
+    /^(?:turn\s+)?(?:the\s+)?(?:microphone|micro\s*phone|mic)\s+(?:on|start|enable|open|unmute)$/i.test(cmd) ||
+    cmd === 'unmute' ||
+    cmd === 'mic on' ||
+    cmd === 'microphone on' ||
+    cmd === 'micro phone on' ||
+    cmd === 'turn mic on' ||
+    cmd === 'turn microphone on' ||
+    cmd === 'turn micro phone on' ||
+    cmd === 'start microphone' ||
+    cmd === 'start mic' ||
+    cmd === 'enable microphone' ||
+    cmd === 'enable mic'
   ) {
     if (!context.isMuted) {
       return { handled: true, response: 'Microphone is already active.' };
@@ -112,7 +140,7 @@ export function executeVoiceCommand(rawText, context = {}) {
   }
 
   // 6. Microphone: Toggle
-  if (/^toggle\s+(?:the\s+)?(?:microphone|mic)$/i.test(cmd)) {
+  if (/^toggle\s+(?:the\s+)?(?:microphone|micro\s*phone|mic)$/i.test(cmd)) {
     if (context.toggleMic) {
       context.toggleMic();
       return { handled: true, response: 'Toggling microphone.' };

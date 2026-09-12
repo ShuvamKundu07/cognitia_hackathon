@@ -40,6 +40,7 @@ class LLMAssistant:
         scene_summary: List[Dict[str, Any]],
         hazards_summary: List[Dict[str, Any]],
         ocr_text: Optional[str] = None,
+        audio_summary: Optional[str] = None,
     ) -> str:
         """Generates a concise audio-friendly answer."""
         if not query:
@@ -48,14 +49,14 @@ class LLMAssistant:
         # If Gemini API key is configured, invoke Gemini API
         if self.api_key and self.provider in ("gemini", "rule_based"):
             try:
-                response = await self._call_gemini_api(query, scene_summary, hazards_summary, ocr_text)
+                response = await self._call_gemini_api(query, scene_summary, hazards_summary, ocr_text, audio_summary)
                 if response:
                     return response
             except Exception as e:
                 logger.error("Gemini API call failed, falling back to local reasoning: %s", e)
 
         # High-quality deterministic natural language fallback
-        return self._generate_local_response(query, scene_summary, hazards_summary, ocr_text)
+        return self._generate_local_response(query, scene_summary, hazards_summary, ocr_text, audio_summary)
 
     async def _call_gemini_api(
         self,
@@ -63,6 +64,7 @@ class LLMAssistant:
         scene_summary: List[Dict[str, Any]],
         hazards_summary: List[Dict[str, Any]],
         ocr_text: Optional[str],
+        audio_summary: Optional[str] = None,
     ) -> str:
         """Calls Google Gemini API with system instructions and model fallbacks."""
         models_to_try = [self.model_name, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
@@ -84,6 +86,8 @@ class LLMAssistant:
             context_lines.append(f"Observed Objects in Scene: {scene_summary}")
         if hazards_summary:
             context_lines.append(f"Active Tracked Hazards: {hazards_summary}")
+        if audio_summary:
+            context_lines.append(f"Detected Environmental Sounds: {audio_summary}")
         if ocr_text:
             context_lines.append(f"Detected Text/Signs: {ocr_text}")
         context_str = "\n".join(context_lines) if context_lines else "No immediate hazards detected; corridor is clear."
@@ -149,6 +153,7 @@ class LLMAssistant:
         scene_summary: List[Dict[str, Any]],
         hazards_summary: List[Dict[str, Any]],
         ocr_text: Optional[str],
+        audio_summary: Optional[str] = None,
     ) -> str:
         """Deterministic, reliable scene explainer."""
         q = query.lower()
@@ -156,11 +161,21 @@ class LLMAssistant:
         if ocr_text and any(t in q for t in ("sign", "read", "text", "say")):
             return f'The sign says "{ocr_text}".'
 
-        if any(t in q for t in ("where am i", "describe", "surroundings", "scene")):
-            if not scene_summary:
-                return "The area appears open and quiet with no obstacles detected."
-            labels = [obj.get("label", "item") for obj in scene_summary[:3]]
-            return f"I observe: {', '.join(labels)}. Walking corridor is monitored."
+        if any(t in q for t in ("where am i", "describe", "surroundings", "scene", "look around", "what do you see", "what is around", "what's around")):
+            desc_parts = []
+            if scene_summary:
+                labels = [obj.get("label", "item") for obj in scene_summary[:3]]
+                desc_parts.append(f"I observe: {', '.join(labels)}")
+            if audio_summary:
+                desc_parts.append(f"I hear {audio_summary}")
+            if desc_parts:
+                return ". ".join(desc_parts) + ". Walking corridor is monitored."
+            return "The area appears open and quiet with no obstacles detected."
+
+        if any(t in q for t in ("sound", "hear", "listen", "noise", "horn", "siren")):
+            if audio_summary:
+                return f"I detect {audio_summary}."
+            return "No warning sounds detected right now. Environment is quiet."
 
         if any(t in q for t in ("thank", "hello", "hi", "help")):
             return "Bro is active and monitoring your walking path."

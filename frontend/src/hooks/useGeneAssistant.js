@@ -210,7 +210,7 @@ export function useGeneAssistant({
       const currentState = geneStateRef.current;
       console.log(`[GENE ASSISTANT] Received transcript: "${cleanText}" in state: ${currentState}`);
 
-      // 1. In IDLE state: evaluate for wake word or direct question
+      // 1. In IDLE state: strictly evaluate for wake word ("Hey Bro")
       if (currentState === GENE_STATE.IDLE) {
         if (isWakePhrase(cleanText)) {
           setUserTranscript(cleanText);
@@ -221,7 +221,7 @@ export function useGeneAssistant({
           if (stripped && !isExitPhrase(stripped)) {
             clearSilenceTimers();
 
-            // Check if user requested a button command (e.g. "turn on the camera")
+            // Check if user requested a button command with wake word (e.g. "Hey Bro turn on the camera")
             const cmdResult = executeVoiceCommand(stripped, voiceContextRef.current);
             if (cmdResult && cmdResult.handled) {
               updateState(GENE_STATE.SPEAKING);
@@ -241,7 +241,7 @@ export function useGeneAssistant({
               sendWakeWord('hey bro');
             }
             if (sendConversation) {
-              console.log('[GENE ASSISTANT] Spoken inquiry from IDLE:', stripped);
+              console.log('[GENE ASSISTANT] Spoken inquiry from IDLE with wake phrase:', stripped);
               sendConversation(stripped);
             }
             return;
@@ -251,33 +251,7 @@ export function useGeneAssistant({
           return;
         }
 
-        // Direct inquiry from IDLE: If the user speaks a direct question or command without "Hey Bro"
-        // (e.g. "Is it safe to cross?", "What is in front of me?", "Turn on the camera", "Read sign")
-        if (cleanText.length > 3) {
-          setUserTranscript(cleanText);
-          clearSilenceTimers();
-
-          const cmdResult = executeVoiceCommand(cleanText, voiceContextRef.current);
-          if (cmdResult && cmdResult.handled) {
-            updateState(GENE_STATE.SPEAKING);
-            setAssistantResponse(cmdResult.response);
-            speak(cmdResult.response, {
-              priorityLevel: 'CONVERSATION',
-              interrupt: true,
-              onEnd: () => {
-                transitionToListening();
-              },
-            });
-            return;
-          }
-
-          updateState(GENE_STATE.THINKING);
-          if (sendConversation) {
-            console.log('[GENE ASSISTANT] Direct spoken inquiry from IDLE:', cleanText);
-            sendConversation(cleanText);
-          }
-          return;
-        }
+        // When IDLE and not a wake phrase, stay off and ignore ambient room speech
         return;
       }
 

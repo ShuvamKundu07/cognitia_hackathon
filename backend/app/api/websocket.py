@@ -66,10 +66,9 @@ class SessionPipeline:
         )
         self.sensor_fusion = SensorFusion()
 
-        # Start live audio detector if hardware mic is enabled and not in mock mode, but keep disabled until user starts mic
+        # Start live audio detector if hardware mic is enabled and not in mock mode
         if not mock_mode and getattr(settings, "enable_hardware_mic", True):
             self.audio_detector.start()
-            self.audio_detector.disable()
 
         self.scene_memory = SceneMemory()
         self.ocr_reader = OCRReader(confidence_threshold=settings.ocr_confidence_threshold)
@@ -328,17 +327,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # 3. Audio Chunk
             elif msg_type == "audio_chunk":
-                if not getattr(pipeline.audio_detector, "enabled", False):
-                    continue
                 audio_data = payload.get("data")
                 if audio_data:
-                    audio_event = pipeline.audio_classifier.classify(audio_data, timestamp=recv_time)
+                    pipeline.audio_detector.enable()
+                    audio_event = pipeline.audio_classifier.classify(audio_data, timestamp=recv_time, channels=2)
                     if audio_event and "engine" not in audio_event.sound.lower():
                         pipeline.sensor_fusion.register_audio_event(audio_event, timestamp=recv_time)
                         chunk_sig = f"{audio_event.sound}_{audio_event.direction}"
                         last_chunk_sig = getattr(pipeline, "_last_chunk_sig", "")
                         last_chunk_time = getattr(pipeline, "_last_chunk_time", 0.0)
-                        if chunk_sig != last_chunk_sig or (recv_time - last_chunk_time > 6.0):
+                        if chunk_sig != last_chunk_sig or (recv_time - last_chunk_time > 2.5):
                             pipeline._last_chunk_sig = chunk_sig
                             pipeline._last_chunk_time = recv_time
                             await ws_manager.send_json(websocket, {
@@ -349,11 +347,31 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "timestamp": audio_event.timestamp,
                             })
 
+                            # If camera is off or not producing hazards, alert pedestrian of acoustic danger
+                            if pipeline.latest_frame is None or not pipeline.active_hazards:
+                                acoustic_hazard = pipeline.sensor_fusion._create_acoustic_hazard(audio_event, timestamp=recv_time)
+                                alert = pipeline.alert_generator.generate_alert(acoustic_hazard, timestamp=recv_time)
+                                if alert:
+                                    arbitrated = pipeline.safety_controller.arbitrate_alert(alert)
+                                    await ws_manager.send_json(websocket, {
+                                        "type": "hazard_alert",
+                                        "hazard_id": arbitrated.hazard_id,
+                                        "hazard_type": arbitrated.hazard_type,
+                                        "message": arbitrated.message,
+                                        "action": arbitrated.action,
+                                        "direction": arbitrated.direction,
+                                        "urgency": arbitrated.urgency,
+                                        "confidence": arbitrated.confidence,
+                                        "timestamp": arbitrated.timestamp,
+                                        "interrupt": arbitrated.interrupt,
+                                    })
+
             # 3b. Test Acoustic Hazard Trigger
             elif msg_type == "test_audio_event":
                 sound = payload.get("sound", "Vehicle Horn")
                 direction = payload.get("direction", "Right")
                 conf = float(payload.get("confidence", 0.95))
+                pipeline.audio_detector.enable()
                 pipeline.audio_detector.trigger_test_hazard(sound=sound, direction=direction, confidence=conf)
                 evt = pipeline.audio_detector.to_audio_event(timestamp=recv_time)
                 if evt and "engine" not in evt.sound.lower():
@@ -366,6 +384,25 @@ async def websocket_endpoint(websocket: WebSocket):
                         "timestamp": evt.timestamp,
                     })
 
+                    # Dispatch alert for testing if camera not producing hazards
+                    if pipeline.latest_frame is None or not pipeline.active_hazards:
+                        acoustic_hazard = pipeline.sensor_fusion._create_acoustic_hazard(evt, timestamp=recv_time)
+                        alert = pipeline.alert_generator.generate_alert(acoustic_hazard, timestamp=recv_time)
+                        if alert:
+                            arbitrated = pipeline.safety_controller.arbitrate_alert(alert)
+                            await ws_manager.send_json(websocket, {
+                                "type": "hazard_alert",
+                                "hazard_id": arbitrated.hazard_id,
+                                "hazard_type": arbitrated.hazard_type,
+                                "message": arbitrated.message,
+                                "action": arbitrated.action,
+                                "direction": arbitrated.direction,
+                                "urgency": arbitrated.urgency,
+                                "confidence": arbitrated.confidence,
+                                "timestamp": arbitrated.timestamp,
+                                "interrupt": arbitrated.interrupt,
+                            })
+
             # 3c. Audio Hardware / Sensor Control (Start / Stop on user mic button click)
             elif msg_type == "audio_control":
                 action = payload.get("action", "start")
@@ -376,10 +413,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     pipeline.audio_detector.disable()
                     logger.info("[WEBSOCKET] Audio hazard detector DISABLED by client microphone button")
 
-            # 3d. Client Settings & Configuration Update
-            elif msg_type == "settings_update":
-                client_settings = payload.get("settings", {})
-                logger.info("[WEBSOCKET] Received client settings update: %s", list(client_settings.keys()))
+            # 3d. Client Settings handled by the dynamic settings block below
 
             # 4. Wake-word Activation ("Hey Bro")
             elif msg_type == "wake_word":
@@ -405,10 +439,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     "timestamp": int(time.time() * 1000),
                 })
 
+                live_audio_evt = pipeline.audio_detector.to_audio_event(timestamp=time.time())
                 reply_text, ocr_res = await pipeline.conversation_manager.handle_query(
                     query=query_text,
                     current_frame=pipeline.latest_frame,
                     active_hazards=pipeline.active_hazards,
+                    audio_event=live_audio_evt,
                 )
 
                 if ocr_res:

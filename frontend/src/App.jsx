@@ -468,6 +468,11 @@ export function App() {
   const handleTriggerTestAudio = useCallback(
     (sound = 'Vehicle Horn', direction = 'Right') => {
       sendAudioControl('start');
+      if (sound.toLowerCase().includes('siren')) {
+        soundCues.playSirenSound();
+      } else {
+        soundCues.playHornSound();
+      }
       sendTestAudioEvent(sound, direction);
       handleIncomingMessage({
         type: 'audio_event',

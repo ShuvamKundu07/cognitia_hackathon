@@ -51,6 +51,7 @@ class ConversationManager:
         query: str,
         current_frame: Optional[np.ndarray],
         active_hazards: List[TrackedHazard],
+        audio_event: Optional[Any] = None,
     ) -> Tuple[str, Optional[OCRResult]]:
         """Processes a spoken or typed user inquiry.
 
@@ -76,6 +77,7 @@ class ConversationManager:
             active_hazards=active_hazards,
             last_target_id=self.last_target_id,
             dialogue_history=list(self.dialogue_history),
+            audio_event=audio_event,
         )
 
         intent = resolved.get("intent")
@@ -117,7 +119,7 @@ class ConversationManager:
             return reply, ocr_res
 
         # 4. Direct Deterministic Safety / Spatial Inquiries
-        if intent in ("CHECK_CROSSING", "QUERY_VEHICLE", "QUERY_PATH", "LOCATE_OBJECT"):
+        if intent in ("CHECK_CROSSING", "QUERY_VEHICLE", "QUERY_PATH", "LOCATE_OBJECT", "QUERY_AUDIO", "QUERY_SURROUNDINGS"):
             reply = resolved.get("response", "Safety status clear.")
             target_id = resolved.get("target_object_id")
             if target_id:
@@ -135,11 +137,17 @@ class ConversationManager:
         # 5. Fallback to Conversational LLM
         scene_summary = self.scene_memory.get_recent_objects_summary()
         hazards_summary = [h.to_frontend_object() for h in active_hazards]
+        audio_summary = (
+            f"{audio_event.sound} on your {audio_event.direction}"
+            if (audio_event and hasattr(audio_event, "sound"))
+            else None
+        )
 
         reply = await self.llm.generate_response(
             query=q,
             scene_summary=scene_summary,
             hazards_summary=hazards_summary,
+            audio_summary=audio_summary,
         )
         self.state = "SPEAKING"
         self.dialogue_history.append({
