@@ -603,6 +603,10 @@ class MockDetector(BaseObjectDetector):
         self.frame_count = 0
 
     def detect(self, frame: np.ndarray, timestamp: float = 0.0) -> List[DetectedObject]:
+        # If not explicitly in mock simulation mode, never emit phantom hazards
+        if not getattr(settings, "mock_mode", False):
+            return []
+
         if timestamp <= 0.0:
             timestamp = time.time()
         self.frame_count += 1

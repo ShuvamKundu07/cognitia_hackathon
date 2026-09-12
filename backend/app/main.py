@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
     logger.info("==================================================================")
     logger.info("Pedestrian Shield AI Backend starting up...")
     logger.info("Operational Mode: %s", "MOCK SIMULATION" if settings.mock_mode else "REAL AI INFERENCE")
+    logger.info("Confidence threshold: %.2f | Heuristic Pavement: %s", settings.confidence_threshold, settings.enable_heuristic_pavement_detector)
     if settings.mock_mode:
         print("Running in MOCK MODE: AI models disabled to save RAM.")
         logger.info("Running in MOCK MODE: AI models disabled to save RAM.")
