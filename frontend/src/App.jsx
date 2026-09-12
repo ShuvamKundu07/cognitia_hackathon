@@ -100,6 +100,7 @@ export function App() {
 
   const alertCacheRef = useRef(new Map());
   const lastAlertRef = useRef(null);
+  const lastSpokenAlertTimeRef = useRef(0);
   const handleToggleMuteRef = useRef(null);
   const handleReplayAlertRef = useRef(null);
   const settingsRef = useRef(settings);
@@ -128,11 +129,11 @@ export function App() {
           const top = sorted.length > 0 ? sorted[0] : null;
           setCurrentHazard(top);
 
-          // Continuous alarm for Caution (HIGH) or Serious Stop (CRITICAL) until risk is mitigated
+          // Continuous alarm ONLY for Serious Stop (CRITICAL) - never for HIGH/MEDIUM/LOW
           if (settings.enable_audio_alerts !== false) {
             const topUrgency = (top?.urgency || '').toLowerCase();
-            if (topUrgency === 'critical' || topUrgency === 'high') {
-              soundCues.startContinuousAlarm(topUrgency);
+            if (topUrgency === 'critical') {
+              soundCues.startContinuousAlarm('critical');
             } else if (soundCues.isAlarmActive()) {
               soundCues.stopContinuousAlarm();
               soundCues.playResolvedTone();
@@ -148,17 +149,25 @@ export function App() {
 
         case 'hazard_alert': {
           const alert = { ...msg };
-          // Enforce full directional speech sentence (e.g. "pedestrian detected straight ahead", "pothole detected on the right")
+          const urgency = (alert.urgency || 'high').toUpperCase();
+
+          // 1. FILTER: Suppress LOW urgency alerts from audio notifications
+          if (urgency === 'LOW') {
+            break;
+          }
+
+          // 2. Enforce full directional speech sentence
           alert.message = formatFullDirectionalAlert(alert);
           lastAlertRef.current = alert;
 
-          const urgency = (alert.urgency || 'high').toUpperCase();
-
-          // Continuous alarm for Serious Stop (CRITICAL) and Caution (HIGH) until risk is mitigated
-          if (settings.enable_audio_alerts !== false && (urgency === 'CRITICAL' || urgency === 'HIGH')) {
-            soundCues.startContinuousAlarm(urgency.toLowerCase());
+          // 3. Continuous alarm ONLY for Serious Stop (CRITICAL)
+          if (settings.enable_audio_alerts !== false && urgency === 'CRITICAL') {
+            soundCues.startContinuousAlarm('critical');
+          } else if (soundCues.isAlarmActive() && urgency !== 'CRITICAL') {
+            soundCues.stopContinuousAlarm();
           }
 
+          // 4. Per-hazard deduplication and state change check
           const allowAlert = shouldTriggerAlert(
             alert,
             alertCacheRef.current,
@@ -173,9 +182,38 @@ export function App() {
             return;
           }
 
+          // 5. GLOBAL CALM THROTTLE:
+          // Unless urgency is CRITICAL (immediate emergency), enforce minimum calm spacing
+          // between any consecutive spoken alerts to prevent sensory overload
+          const now = Date.now();
+          const timeSinceLastSpoken = now - (lastSpokenAlertTimeRef.current || 0);
+          const minInterAlertSpacing = settings.alert_frequency === 'HIGH' ? 4000 : settings.alert_frequency === 'LOW' ? 12000 : 7000;
+
+          if (urgency !== 'CRITICAL' && timeSinceLastSpoken < minInterAlertSpacing) {
+            setSessionStats((prev) => ({
+              ...prev,
+              dedupedCount: prev.dedupedCount + 1,
+            }));
+            return;
+          }
+
+          // 6. If currently speaking an alert, do not interrupt with non-critical alert
+          if (isSpeaking && urgency !== 'CRITICAL') {
+            setSessionStats((prev) => ({
+              ...prev,
+              dedupedCount: prev.dedupedCount + 1,
+            }));
+            return;
+          }
+
+          // Record timestamp for global pacing
+          lastSpokenAlertTimeRef.current = now;
+
           const alertRecord = {
-            timestamp: Date.now(),
+            timestamp: now,
             urgency: alert.urgency,
+            direction: alert.direction,
+            inPath: alert.inPath,
           };
           if (alert.hazard_id) {
             alertCacheRef.current.set(alert.hazard_id, alertRecord);
@@ -188,6 +226,10 @@ export function App() {
           if (hType) {
             alertCacheRef.current.set(`sem_${hType}_${dir}`, alertRecord);
           }
+          alertCacheRef.current.set('__last_global_alert_timestamp__', {
+            timestamp: now,
+            urgency,
+          });
 
           // Safety preemption: CRITICAL or HIGH alerts interrupt Gene immediately
           if (urgency === 'CRITICAL' || urgency === 'HIGH' || alert.interrupt) {
@@ -203,7 +245,7 @@ export function App() {
 
           setAlertHistory((prev) => [
             {
-              timestamp: alert.timestamp || Date.now(),
+              timestamp: alert.timestamp || now,
               hazard: alert.hazard_type || alert.label || 'Obstacle',
               direction: alert.direction || 'Ahead',
               urgency: alert.urgency || 'HIGH',
@@ -256,12 +298,16 @@ export function App() {
           const now = Date.now();
           const lastChimeTime = lastAudioChimeRef.current?.time || 0;
           const lastSound = lastAudioChimeRef.current?.sound;
+          const timeSinceLastSpoken = now - (lastSpokenAlertTimeRef.current || 0);
 
-          // Only chime if it is a new sound type or 6+ seconds have passed (prevent repetitive alert chime)
+          // Only chime if not currently speaking, not within 4s of a spoken alert,
+          // high confidence (> 0.90), and at least 8s since last chime
           if (
-            msg.confidence > 0.85 &&
+            !isSpeaking &&
+            timeSinceLastSpoken > 4000 &&
+            msg.confidence > 0.90 &&
             settings.enable_audio_alerts !== false &&
-            (msg.sound !== lastSound || now - lastChimeTime > 6000)
+            (msg.sound !== lastSound || now - lastChimeTime > 8000)
           ) {
             lastAudioChimeRef.current = { time: now, sound: msg.sound };
             soundCues.playWarningChime();
@@ -314,7 +360,7 @@ export function App() {
           break;
       }
     },
-    [settings, speak, walkingPath]
+    [settings, speak, walkingPath, isSpeaking]
   );
 
   const {
@@ -731,21 +777,6 @@ export function App() {
               <Server className="w-3.5 h-3.5" />
               <span>{isMockMode ? 'MOCK ENGINE' : wsStatus}</span>
             </div>
-
-            {/* <button
-              type="button"
-              onClick={() => toggleMockMode()}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-black transition-colors border shadow ${
-                isMockMode
-                  ? 'bg-purple-600 text-white border-purple-400 hover:bg-purple-500 ring-2 ring-purple-400/50'
-                  : 'bg-surface-elevated text-slate-300 border-surface-border hover:text-white'
-              }`}
-              aria-pressed={isMockMode}
-              title="Toggle between Live FastAPI WebSocket and Mock Simulator"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>{isMockMode ? 'Mock Active' : 'Enable Mock'}</span>
-            </button> */}
           </div>
         </div>
       </header>

@@ -191,6 +191,7 @@ class HazardAlert(BaseModel):
     confidence: float
     timestamp: int = Field(default_factory=lambda: int(time.time() * 1000))
     interrupt: bool = False
+    movement_direction: Optional[str] = None  # e.g., "left", "right", "stop", "straight"
 
 
 class AudioEvent(BaseModel):

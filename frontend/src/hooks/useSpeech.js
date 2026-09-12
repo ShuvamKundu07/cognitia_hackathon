@@ -230,8 +230,11 @@ export function useSpeech({
 
       const isCritical = priority === SPEECH_PRIORITY.CRITICAL;
       const isHigherPriority = currentPriority !== null && priority > currentPriority;
+      // An active CRITICAL emergency alert must NEVER be interrupted by a lower-priority detection
+      const isCurrentlyCritical = currentPriority === SPEECH_PRIORITY.CRITICAL;
+      const canInterrupt = !isCurrentlyCritical && (isCritical || isHigherPriority || (options.interrupt && priority >= (currentPriority || 0)));
 
-      if (isCritical || isHigherPriority || options.interrupt) {
+      if (isCritical || canInterrupt) {
         if (isCritical) {
           soundCues.playCriticalAlert();
         } else if (priority === SPEECH_PRIORITY.HIGH) {
@@ -260,6 +263,16 @@ export function useSpeech({
           processNextInQueue();
         }, 160);
         return;
+      }
+
+      // If a critical alert is actively speaking, drop lower-priority alerts rather than queuing to speak afterwards
+      if (isCurrentlyCritical && !isCritical) {
+        return;
+      }
+
+      // Avoid speaking too many alerts back-to-back by capping queued non-critical speech
+      if (speechQueueRef.current.length >= 2) {
+        speechQueueRef.current = speechQueueRef.current.filter((item) => item.priority >= priority).slice(0, 1);
       }
 
       speechQueueRef.current.push({

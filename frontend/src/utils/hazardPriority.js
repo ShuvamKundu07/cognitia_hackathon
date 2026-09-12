@@ -95,6 +95,19 @@ export function sortHazardsByPriority(hazards, walkingPath = DEFAULT_WALKING_PAT
 export function shouldTriggerAlert(alert, alertCache, cooldownMs = 8000) {
   if (!alert || !alertCache) return true;
   const now = Date.now();
+  const currentUrgency = (alert.urgency || '').toLowerCase();
+
+  // 1. Filter out LOW urgency from audio alerts
+  if (currentUrgency === 'low') {
+    return false;
+  }
+
+  // 2. Global calm throttle: enforce minimum delay between consecutive alerts unless CRITICAL
+  const lastGlobal = alertCache.get('__last_global_alert_timestamp__');
+  const minInterAlertSpacing = Math.min(cooldownMs, 5000);
+  if (currentUrgency !== 'critical' && lastGlobal && (now - lastGlobal.timestamp < minInterAlertSpacing)) {
+    return false;
+  }
 
   const id = alert.hazard_id;
   const msgKey = alert.message ? `msg_${alert.message.trim().toLowerCase()}` : null;
@@ -121,16 +134,32 @@ export function shouldTriggerAlert(alert, alertCache, cooldownMs = 8000) {
 
   const timeElapsed = now - lastAlert.timestamp;
 
-  // Immediate override if urgency escalated to critical
-  const currentUrgency = (alert.urgency || '').toLowerCase();
-  const lastUrgency = (lastAlert.urgency || '').toLowerCase();
-  if (currentUrgency === 'critical' && lastUrgency !== 'critical') {
+  // Re-alert if direction changed significantly
+  const currentDir = (alert.direction || '').toLowerCase();
+  const lastDir = (lastAlert.direction || '').toLowerCase();
+  if (currentDir && lastDir && currentDir !== lastDir && currentDir !== 'unknown') {
+    return true;
+  }
+
+  // Re-alert if obstacle newly entered walking path
+  if (alert.inPath && !lastAlert.inPath) {
+    return true;
+  }
+
+  // Immediate override if urgency escalated
+  const urgencyRanks = { critical: 4, high: 3, medium: 2, low: 1 };
+  const currentRank = urgencyRanks[(alert.urgency || 'low').toLowerCase()] || 1;
+  const lastRank = urgencyRanks[(lastAlert.urgency || 'low').toLowerCase()] || 1;
+  if (currentRank > lastRank) {
     return true;
   }
 
   // Enforce cooldown interval to suppress duplicate/consecutive alert spam
   return timeElapsed >= cooldownMs;
 }
+
+import { AlertManager, defaultAlertManager, normalizeCategory, determineEvasionGuidance } from './alertManager.js';
+export { AlertManager, defaultAlertManager, normalizeCategory, determineEvasionGuidance };
 
 /**
  * Maps urgency to accessible styling classes and labels.
@@ -219,8 +248,17 @@ export function formatFullDirectionalAlert(alert) {
     lowerMsg.includes('behind') ||
     lowerMsg.includes('blindspot');
 
-  if (rawMsg && hasDirection && lowerMsg.includes('detected')) {
-    return rawMsg;
+  if (rawMsg) {
+    if (
+      lowerMsg.includes('multiple') ||
+      lowerMsg.includes('approaching') ||
+      lowerMsg.startsWith('warning:') ||
+      lowerMsg.startsWith('stop.') ||
+      lowerMsg.startsWith('notice:') ||
+      (hasDirection && (lowerMsg.includes('detected') || lowerMsg.includes('heard') || lowerMsg.includes('blindspot')))
+    ) {
+      return rawMsg;
+    }
   }
 
   let labelName = 'Obstacle';
@@ -238,5 +276,19 @@ export function formatFullDirectionalAlert(alert) {
   }
 
   return `${prefix}${labelName} detected ${dirPhrase}.`;
+}
+
+export function getHazardEvasion(hazard, allHazards = [], walkingPath = DEFAULT_WALKING_PATH) {
+  if (!hazard) return { movementDirection: 'straight', actionText: 'MAINTAIN PATH', evasionPhrase: '' };
+  if (hazard.movement_direction) {
+    const dir = hazard.movement_direction.toLowerCase();
+    const action = hazard.action || (dir === 'left' ? 'MOVE LEFT' : dir === 'right' ? 'MOVE RIGHT' : dir === 'stop' ? 'STOP' : 'AWARENESS');
+    return {
+      movementDirection: dir,
+      actionText: action,
+      evasionPhrase: '',
+    };
+  }
+  return determineEvasionGuidance(hazard, allHazards, walkingPath);
 }
 

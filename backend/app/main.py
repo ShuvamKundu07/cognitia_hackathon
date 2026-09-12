@@ -27,6 +27,11 @@ async def lifespan(app: FastAPI):
     logger.info("==================================================================")
     logger.info("Pedestrian Shield AI Backend starting up...")
     logger.info("Operational Mode: %s", "MOCK SIMULATION" if settings.mock_mode else "REAL AI INFERENCE")
+    if settings.mock_mode:
+        print("Running in MOCK MODE: AI models disabled to save RAM.")
+        logger.info("Running in MOCK MODE: AI models disabled to save RAM.")
+    else:
+        logger.info("Running in REAL AI MODE: Heavy PyTorch / YOLO models enabled.")
     logger.info("Host: %s | Port: %d | Processing FPS: %d", settings.host, settings.port, settings.processing_fps)
     logger.info("Walking Corridor: x=%.2f, y=%.2f, w=%.2f, h=%.2f",
                 settings.walking_path_x, settings.walking_path_y, settings.walking_path_width, settings.walking_path_height)

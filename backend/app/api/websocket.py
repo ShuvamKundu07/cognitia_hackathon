@@ -185,12 +185,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Alert Arbitration & Non-Repetitive Generation
                 top_hazard = sorted_hazards[0] if sorted_hazards else None
-                if top_hazard:
-                    alert = pipeline.alert_generator.generate_alert(top_hazard, timestamp=now_ts)
+                if sorted_hazards:
+                    alert = pipeline.alert_generator.generate_consolidated_alert(sorted_hazards, timestamp=now_ts)
                     if alert:
                         # Safety controller enforces critical audio interruptions
                         arbitrated_alert = pipeline.safety_controller.arbitrate_alert(alert)
-                        pipeline.hazard_memory.mark_alerted(top_hazard.hazard_id, timestamp=now_ts)
+                        pipeline.hazard_memory.mark_alerted(alert.hazard_id, timestamp=now_ts)
 
                         await ws_manager.send_json(websocket, {
                             "type": "hazard_alert",
@@ -375,6 +375,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "stop":
                     pipeline.audio_detector.disable()
                     logger.info("[WEBSOCKET] Audio hazard detector DISABLED by client microphone button")
+
+            # 3d. Client Settings & Configuration Update
+            elif msg_type == "settings_update":
+                client_settings = payload.get("settings", {})
+                logger.info("[WEBSOCKET] Received client settings update: %s", list(client_settings.keys()))
 
             # 4. Wake-word Activation ("Hey Bro")
             elif msg_type == "wake_word":

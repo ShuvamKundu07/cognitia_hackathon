@@ -6,6 +6,7 @@
  */
 
 import { isWakePhrase, isExitPhrase } from '../utils/geneConfig';
+import { defaultAlertManager } from '../utils/alertManager';
 
 class MockBackendService {
   constructor() {
@@ -14,6 +15,7 @@ class MockBackendService {
     this.isRunning = false;
     this.tickInterval = null;
     this.frameCounter = 0;
+    this.alertManager = defaultAlertManager;
     
     // Scenario state variables
     this.carProgress = 0;
@@ -153,9 +155,10 @@ class MockBackendService {
         this.emit('hazard_alert', {
           hazard_id: 'car_17',
           hazard_type: 'vehicle',
-          message: 'Stop. Vehicle detected on the right.',
-          action: 'STOP IMMEDIATELY',
+          message: 'Stop. Vehicle detected on the right. Move left.',
+          action: 'STOP & STEP LEFT',
           direction: 'right',
+          movement_direction: 'left',
           urgency: 'critical',
           confidence: 0.94,
           timestamp: Date.now(),
@@ -208,9 +211,10 @@ class MockBackendService {
     this.emit('hazard_alert', {
       hazard_id: 'car_manual',
       hazard_type: 'vehicle',
-      message: 'Stop. Vehicle detected on the right.',
-      action: 'STOP IMMEDIATELY',
+      message: 'Stop. Vehicle detected on the right. Move left.',
+      action: 'STOP & STEP LEFT',
       direction: 'right',
+      movement_direction: 'left',
       urgency: 'critical',
       confidence: 0.96,
       timestamp: Date.now(),
@@ -249,9 +253,10 @@ class MockBackendService {
     this.emit('hazard_alert', {
       hazard_id: 'pothole_manual',
       hazard_type: 'surface',
-      message: 'Caution. Pothole detected straight ahead.',
-      action: 'SLOW DOWN & STEP RIGHT',
+      message: 'Caution. Pothole detected straight ahead. Step right to bypass.',
+      action: 'STEP RIGHT',
       direction: 'ahead',
+      movement_direction: 'right',
       urgency: 'high',
       confidence: 0.91,
       timestamp: Date.now(),
@@ -268,6 +273,108 @@ class MockBackendService {
         walking_path: { x: 0.30, y: 0.45, width: 0.40, height: 0.55 },
         timestamp: Date.now(),
       });
+    }, 7000);
+  }
+
+  triggerMultipleCars() {
+    const cars = [
+      { id: 'car_group_1', label: 'car', confidence: 0.94, bbox: { x: 0.42, y: 0.28, width: 0.18, height: 0.16 }, direction: 'ahead', urgency: 'high' },
+      { id: 'car_group_2', label: 'vehicle', confidence: 0.91, bbox: { x: 0.62, y: 0.32, width: 0.20, height: 0.18 }, direction: 'ahead', urgency: 'high' },
+      { id: 'car_group_3', label: 'sedan', confidence: 0.89, bbox: { x: 0.22, y: 0.30, width: 0.16, height: 0.15 }, direction: 'ahead', urgency: 'medium' },
+      { id: 'car_group_4', label: 'truck', confidence: 0.88, bbox: { x: 0.78, y: 0.36, width: 0.19, height: 0.22 }, direction: 'ahead', urgency: 'medium' },
+    ];
+
+    this.emit('detection', {
+      objects: cars,
+      walking_path: { x: 0.30, y: 0.45, width: 0.40, height: 0.55 },
+      timestamp: Date.now(),
+    });
+
+    this.emit('hazard_alert', {
+      hazard_id: 'car_group_1',
+      hazard_type: 'vehicle',
+      message: 'Multiple cars detected ahead. Step right to bypass.',
+      action: 'STEP RIGHT',
+      direction: 'ahead',
+      movement_direction: 'right',
+      urgency: 'high',
+      confidence: 0.94,
+      timestamp: Date.now(),
+      groupedCount: 4,
+    });
+
+    if (this._multiCarTimeout) clearTimeout(this._multiCarTimeout);
+    this._multiCarTimeout = setTimeout(() => {
+      this.emit('hazard_resolved', { hazard_id: 'car_group_1', timestamp: Date.now() });
+      this.emit('detection', { objects: [], walking_path: { x: 0.30, y: 0.45, width: 0.40, height: 0.55 }, timestamp: Date.now() });
+    }, 7000);
+  }
+
+  triggerMultiplePedestrians() {
+    const peds = [
+      { id: 'ped_group_1', label: 'pedestrian', confidence: 0.92, bbox: { x: 0.35, y: 0.32, width: 0.10, height: 0.28 }, direction: 'ahead', urgency: 'medium' },
+      { id: 'ped_group_2', label: 'pedestrian', confidence: 0.90, bbox: { x: 0.48, y: 0.34, width: 0.09, height: 0.26 }, direction: 'ahead', urgency: 'medium' },
+      { id: 'ped_group_3', label: 'pedestrian', confidence: 0.87, bbox: { x: 0.25, y: 0.30, width: 0.10, height: 0.25 }, direction: 'ahead', urgency: 'medium' },
+      { id: 'ped_group_4', label: 'pedestrian', confidence: 0.85, bbox: { x: 0.60, y: 0.35, width: 0.09, height: 0.27 }, direction: 'ahead', urgency: 'low' },
+      { id: 'ped_group_5', label: 'person', confidence: 0.83, bbox: { x: 0.15, y: 0.33, width: 0.08, height: 0.24 }, direction: 'ahead', urgency: 'low' },
+    ];
+
+    this.emit('detection', {
+      objects: peds,
+      walking_path: { x: 0.30, y: 0.45, width: 0.40, height: 0.55 },
+      timestamp: Date.now(),
+    });
+
+    this.emit('hazard_alert', {
+      hazard_id: 'ped_group_1',
+      hazard_type: 'pedestrian',
+      message: 'Multiple pedestrians detected ahead. Step left to bypass.',
+      action: 'STEP LEFT',
+      direction: 'ahead',
+      movement_direction: 'left',
+      urgency: 'medium',
+      confidence: 0.92,
+      timestamp: Date.now(),
+      groupedCount: 5,
+    });
+
+    if (this._multiPedTimeout) clearTimeout(this._multiPedTimeout);
+    this._multiPedTimeout = setTimeout(() => {
+      this.emit('hazard_resolved', { hazard_id: 'ped_group_1', timestamp: Date.now() });
+      this.emit('detection', { objects: [], walking_path: { x: 0.30, y: 0.45, width: 0.40, height: 0.55 }, timestamp: Date.now() });
+    }, 7000);
+  }
+
+  triggerCarAndMultipleObstacles() {
+    const mixed = [
+      { id: 'car_mixed', label: 'car', confidence: 0.95, bbox: { x: 0.65, y: 0.30, width: 0.24, height: 0.20 }, direction: 'right', motion: 'approaching', urgency: 'high' },
+      { id: 'obs_mixed_1', label: 'pothole', confidence: 0.88, bbox: { x: 0.42, y: 0.65, width: 0.16, height: 0.12 }, direction: 'ahead', urgency: 'medium' },
+      { id: 'obs_mixed_2', label: 'traffic cone', confidence: 0.82, bbox: { x: 0.32, y: 0.55, width: 0.12, height: 0.18 }, direction: 'ahead', urgency: 'low' },
+    ];
+
+    this.emit('detection', {
+      objects: mixed,
+      walking_path: { x: 0.30, y: 0.45, width: 0.40, height: 0.55 },
+      timestamp: Date.now(),
+    });
+
+    this.emit('hazard_alert', {
+      hazard_id: 'car_mixed',
+      hazard_type: 'multi_hazard',
+      message: 'Warning: car approaching from the right. Multiple obstacles ahead. Stop and step left.',
+      action: 'STOP & STEP LEFT',
+      direction: 'right',
+      movement_direction: 'left',
+      urgency: 'high',
+      confidence: 0.95,
+      timestamp: Date.now(),
+      groupedCount: 3,
+    });
+
+    if (this._mixedTimeout) clearTimeout(this._mixedTimeout);
+    this._mixedTimeout = setTimeout(() => {
+      this.emit('hazard_resolved', { hazard_id: 'car_mixed', timestamp: Date.now() });
+      this.emit('detection', { objects: [], walking_path: { x: 0.30, y: 0.45, width: 0.40, height: 0.55 }, timestamp: Date.now() });
     }, 7000);
   }
 
@@ -529,22 +636,6 @@ class MockBackendService {
               urgency: inPath && normY > 0.75 ? 'critical' : inPath ? 'high' : 'medium',
             };
             objects.push(potholeObj);
-
-            // Trigger audible alert if critical in walk path
-            if (inPath && normY > 0.55 && now - this._lastAlertTime > 8000) {
-              this._lastAlertTime = now;
-              const dirPhrase = dir === 'right' ? 'on the right' : dir === 'left' ? 'on the left' : 'straight ahead';
-              this.emit('hazard_alert', {
-                hazard_id: 'live_pothole',
-                hazard_type: 'pothole',
-                message: `Caution. Pothole detected ${dirPhrase}.`,
-                action: 'STEP RIGHT & SLOW DOWN',
-                direction: dir,
-                urgency: potholeObj.urgency,
-                confidence: potholeObj.confidence,
-                timestamp: now,
-              });
-            }
           }
         }
 
@@ -610,24 +701,23 @@ class MockBackendService {
               direction: dir,
               urgency,
             });
-
-            if ((urgency === 'critical' || urgency === 'high') && now - this._lastObjAlertTime > 8000) {
-              this._lastObjAlertTime = now;
-              const dirPhrase = dir === 'right' ? 'on the right' : dir === 'left' ? 'on the left' : 'straight ahead';
-              const isCrit = urgency === 'critical';
-              const alertMsg = `${isCrit ? 'Stop. ' : 'Caution. '}${isVehicle ? 'Vehicle' : 'Pedestrian'} detected ${dirPhrase}.`;
-              this.emit('hazard_alert', {
-                hazard_id: isVehicle ? 'live_vehicle' : 'live_pedestrian',
-                hazard_type: isVehicle ? 'vehicle' : 'pedestrian',
-                message: alertMsg,
-                action: isCrit ? 'STOP IMMEDIATELY' : 'MAINTAIN AWARENESS',
-                direction: dir,
-                urgency,
-                confidence: 0.88,
-                timestamp: now,
-              });
-            }
           }
+        }
+
+        // Consolidated alert generation to prevent simultaneous alert spam
+        const consolidatedAlert = this.alertManager.consolidateDetections(objects, {
+          timestamp: now,
+          cooldownMs: 8000,
+          walkingPath: {
+            x: 0.30,
+            y: 0.45,
+            width: 0.40,
+            height: 0.55,
+          },
+        });
+
+        if (consolidatedAlert) {
+          this.emit('hazard_alert', consolidatedAlert);
         }
 
         // Emit real-time live camera detections

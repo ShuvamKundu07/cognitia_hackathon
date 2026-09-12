@@ -12,10 +12,24 @@ export const WS_STATUS = {
   ERROR: 'ERROR',
 };
 
+function getResolvedWsUrl() {
+  if (import.meta.env.VITE_BACKEND_WS_URL) {
+    return import.meta.env.VITE_BACKEND_WS_URL.trim();
+  }
+  const httpUrl = import.meta.env.VITE_BACKEND_URL;
+  if (httpUrl && typeof httpUrl === 'string') {
+    const trimmed = httpUrl.trim();
+    const wsProto = trimmed.startsWith('https') ? 'wss' : 'ws';
+    const host = trimmed.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    return `${wsProto}://${host}/ws`;
+  }
+  return 'ws://localhost:8000/ws';
+}
+
 class WebSocketService {
   constructor() {
     this.ws = null;
-    this.url = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8000/ws';
+    this.url = getResolvedWsUrl();
     this.status = WS_STATUS.DISCONNECTED;
     this.listeners = new Map();
     this.statusListeners = new Set();

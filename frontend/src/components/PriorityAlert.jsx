@@ -1,4 +1,4 @@
-import { getUrgencyStyles } from '../utils/hazardPriority';
+import { getUrgencyStyles, getHazardEvasion } from '../utils/hazardPriority';
 import { formatConfidence, formatDirection } from '../utils/formatting';
 import {
   AlertOctagon,
@@ -8,12 +8,13 @@ import {
   ArrowUp,
   Volume2,
   CheckCircle2,
+  Navigation,
 } from 'lucide-react';
 
 /**
  * PriorityAlert Component.
  * Displays the current highest-priority hazard requiring pedestrian action.
- * Critical alerts visually interrupt other UI with assertive announcements.
+ * Emphasizes explicit directional evasion instructions ("Move Left", "Step Right", "Stop").
  */
 export function PriorityAlert({
   hazard,
@@ -46,15 +47,31 @@ export function PriorityAlert({
   const styles = getUrgencyStyles(urgency);
   const isCritical = urgency === 'critical';
 
+  const evasion = getHazardEvasion(hazard);
+  const moveDir = (hazard.movement_direction || evasion.movementDirection || 'straight').toLowerCase();
+  const actionText = hazard.action || evasion.actionText || (isCritical ? 'STOP' : 'CAUTION');
+  const alertMessage = hazard.message || `${hazard.label || 'Obstacle'} detected ${formatDirection(hazard.direction)}.`;
+
   const getDirectionIcon = (dir) => {
     const d = (dir || '').toLowerCase();
-    if (d.includes('left')) return <ArrowLeft className="w-6 h-6 text-white animate-pulse" />;
-    if (d.includes('right')) return <ArrowRight className="w-6 h-6 text-white animate-pulse" />;
-    return <ArrowUp className="w-6 h-6 text-white animate-pulse" />;
+    if (d.includes('left')) return <ArrowLeft className="w-5 h-5 text-amber-300" />;
+    if (d.includes('right')) return <ArrowRight className="w-5 h-5 text-amber-300" />;
+    return <ArrowUp className="w-5 h-5 text-amber-300" />;
   };
 
-  const actionText = hazard.action || (isCritical ? 'STOP' : urgency === 'high' ? 'CAUTION' : 'AWARENESS');
-  const alertMessage = hazard.message || `${hazard.label || 'Obstacle'} detected ${formatDirection(hazard.direction)}.`;
+  const getMovementIcon = (dir) => {
+    if (dir === 'left') return <ArrowLeft className="w-7 h-7 text-cyan-300 animate-pulse" />;
+    if (dir === 'right') return <ArrowRight className="w-7 h-7 text-cyan-300 animate-pulse" />;
+    if (dir === 'stop') return <AlertOctagon className="w-7 h-7 text-red-400 animate-bounce" />;
+    return <ArrowUp className="w-7 h-7 text-emerald-300" />;
+  };
+
+  const getMovementLabel = (dir) => {
+    if (dir === 'left') return 'MOVE LEFT';
+    if (dir === 'right') return 'MOVE RIGHT';
+    if (dir === 'stop') return 'STOP IMMEDIATELY';
+    return 'PROCEED STRAIGHT';
+  };
 
   return (
     <section
@@ -130,22 +147,67 @@ export function PriorityAlert({
         </p>
       </div>
 
-      {/* Direction & Confidence */}
-      <div className="grid grid-cols-2 gap-3 mt-4">
+      {/* Actionable Directional Guidance Banner */}
+      <div
+        className={`mt-4 p-4 rounded-xl border-2 flex items-center justify-between gap-4 shadow-lg ${
+          moveDir === 'stop'
+            ? 'bg-red-950/90 border-red-500 text-red-100'
+            : 'bg-cyan-950/80 border-cyan-400 text-cyan-100'
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-black/60 border border-white/20 shadow-inner">
+            {getMovementIcon(moveDir)}
+          </div>
+          <div>
+            <div className="text-[11px] uppercase font-black tracking-wider text-slate-300">
+              Recommended Movement to Evade Hazard
+            </div>
+            <div className="text-2xl font-black tracking-tight text-white uppercase drop-shadow-sm">
+              {actionText}
+            </div>
+          </div>
+        </div>
+
+        <div className="hidden sm:flex flex-col items-end text-right">
+          <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Threat Location</span>
+          <span className="text-sm font-black text-amber-300 capitalize">{hazard.direction || 'Ahead'}</span>
+        </div>
+      </div>
+
+      {/* Direction, Movement & Confidence Breakdown */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
+        {/* Recommended Move */}
+        <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-elevated/70 border border-surface-border">
+          <div className="p-2 rounded-lg bg-surface-darkest border border-surface-border">
+            <Navigation className="w-5 h-5 text-cyan-300" />
+          </div>
+          <div>
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Move To
+            </div>
+            <div className="text-sm font-black text-cyan-300 uppercase">
+              {getMovementLabel(moveDir)}
+            </div>
+          </div>
+        </div>
+
+        {/* Hazard Location */}
         <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-elevated/70 border border-surface-border">
           <div className="p-2 rounded-lg bg-surface-darkest border border-surface-border">
             {getDirectionIcon(hazard.direction)}
           </div>
           <div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Direction
+              Hazard Position
             </div>
-            <div className="text-base font-black text-white capitalize">
+            <div className="text-sm font-black text-white capitalize">
               {hazard.direction || 'Ahead'}
             </div>
           </div>
         </div>
 
+        {/* Confidence */}
         <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-elevated/70 border border-surface-border">
           <div className="p-2 rounded-lg bg-surface-darkest border border-surface-border text-emerald-400 font-mono font-bold text-sm">
             {formatConfidence(hazard.confidence)}
@@ -154,21 +216,21 @@ export function PriorityAlert({
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
               Confidence
             </div>
-            <div className="text-base font-black text-white">
+            <div className="text-sm font-black text-white">
               {formatConfidence(hazard.confidence)}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Assertive Live Region */}
+      {/* Assertive Live Region for Screen Readers */}
       <div
         className="sr-only"
         role="alert"
         aria-live={isCritical ? 'assertive' : 'polite'}
         aria-atomic="true"
       >
-        {isCritical ? 'CRITICAL SAFETY ALERT:' : 'Hazard alert:'} {actionText}. {alertMessage}. Direction: {formatDirection(hazard.direction)}. Confidence {formatConfidence(hazard.confidence)}.
+        {isCritical ? 'CRITICAL SAFETY ALERT:' : 'Hazard alert:'} Action: {actionText}. {alertMessage}. Move direction: {getMovementLabel(moveDir)}. Hazard location: {formatDirection(hazard.direction)}. Confidence {formatConfidence(hazard.confidence)}.
       </div>
     </section>
   );

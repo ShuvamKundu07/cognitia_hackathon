@@ -104,6 +104,36 @@ export function Dashboard({
 
             <button
               type="button"
+              onClick={() => mockBackend.triggerMultipleCars && mockBackend.triggerMultipleCars()}
+              className="px-3 py-1.5 bg-rose-700 hover:bg-rose-600 text-white rounded-lg text-xs font-bold transition-transform active:scale-95 flex items-center gap-1.5 shadow"
+              title="Test 4 simultaneous cars -> 'Multiple cars detected ahead.'"
+            >
+              <AlertOctagon className="w-3.5 h-3.5" />
+              4 Cars Grouped
+            </button>
+
+            <button
+              type="button"
+              onClick={() => mockBackend.triggerMultiplePedestrians && mockBackend.triggerMultiplePedestrians()}
+              className="px-3 py-1.5 bg-sky-700 hover:bg-sky-600 text-white rounded-lg text-xs font-bold transition-transform active:scale-95 flex items-center gap-1.5 shadow"
+              title="Test 5 pedestrians -> 'Multiple pedestrians detected ahead.'"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              5 Pedestrians Grouped
+            </button>
+
+            <button
+              type="button"
+              onClick={() => mockBackend.triggerCarAndMultipleObstacles && mockBackend.triggerCarAndMultipleObstacles()}
+              className="px-3 py-1.5 bg-fuchsia-700 hover:bg-fuchsia-600 text-white rounded-lg text-xs font-bold transition-transform active:scale-95 flex items-center gap-1.5 shadow"
+              title="Test approaching car + obstacles -> 'Warning: car approaching from the right. Multiple obstacles ahead.'"
+            >
+              <AlertOctagon className="w-3.5 h-3.5" />
+              Car + Obstacles Mixed
+            </button>
+
+            <button
+              type="button"
               onClick={() => mockBackend.triggerPotholeAhead()}
               className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition-transform active:scale-95 flex items-center gap-1.5 shadow"
             >

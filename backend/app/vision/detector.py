@@ -270,6 +270,11 @@ class CustomNeuralHazardDetector:
         self._initialize_model()
 
     def _initialize_model(self) -> None:
+        if getattr(settings, "mock_mode", False):
+            logger.info("Running in MOCK MODE: CustomNeuralHazardDetector bypassed to save RAM.")
+            self.is_available = False
+            return
+
         try:
             from ultralytics import YOLO  # type: ignore
 
@@ -423,6 +428,11 @@ class YOLODetector(BaseObjectDetector):
         self._initialize_model()
 
     def _initialize_model(self) -> None:
+        if getattr(settings, "mock_mode", False):
+            logger.info("Running in MOCK MODE: YOLODetector bypassed to save RAM.")
+            self.is_available = False
+            return
+
         try:
             from ultralytics import YOLO  # type: ignore
 

@@ -21,6 +21,7 @@ except ImportError:
     tf = None
 
 from app.audio.preprocessing import AudioPreprocessor
+from app.config import settings
 from app.hazards.models import AudioEvent
 
 logger = logging.getLogger("audio.hazard_detector")
@@ -122,6 +123,10 @@ class AudioHazardDetector:
 
     def _init_yamnet(self) -> None:
         """Attempts to load YAMNet offline model from local directory."""
+        if getattr(settings, "mock_mode", False):
+            logger.info("Running in MOCK MODE: YAMNet audio model bypassed to save RAM.")
+            return
+
         if not os.path.exists(self.model_dir):
             logger.info(
                 "Local YAMNet directory '%s' not found. AudioHazardDetector will run in spectral-energy fallback mode.",

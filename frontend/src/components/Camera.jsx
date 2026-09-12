@@ -32,10 +32,15 @@ export function Camera({
             LIVE CAMERA FEED
           </h2>
           {isActive && (
-            <span className="flex items-center gap-1.5 px-2 py-0.5 text-xs font-semibold bg-emerald-950 text-emerald-400 border border-emerald-600 rounded-full">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              LIVE
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="flex items-center gap-1.5 px-2 py-0.5 text-xs font-semibold bg-emerald-950 text-emerald-400 border border-emerald-600 rounded-full">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                LIVE
+              </span>
+              <span className="hidden sm:inline-flex items-center px-2 py-0.5 text-xs font-mono font-bold bg-surface-darkest text-slate-300 border border-surface-border rounded-md">
+                {objects.length === 0 ? 'Clear Corridor' : `${objects.length} ${objects.length === 1 ? 'Object' : 'Objects'} Tracked`}
+              </span>
+            </div>
           )}
         </div>
 

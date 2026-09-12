@@ -24,6 +24,11 @@ class OCRReader:
 
     def _init_engine(self) -> None:
         """Attempts to load PaddleOCR or Tesseract if installed."""
+        if getattr(settings, "mock_mode", False):
+            logger.info("Running in MOCK MODE: PaddleOCR bypassed to save RAM.")
+            self.paddle_ocr = None
+            return
+
         try:
             from paddleocr import PaddleOCR  # type: ignore
 
