@@ -40,29 +40,24 @@ export function isWakePhrase(text) {
   if (!text) return false;
   const clean = text.trim().toLowerCase().replace(/[.,!?;:]/g, '');
 
-  // Exact wake phrases
-  if (
-    clean === 'hey bro' ||
-    clean === 'hay bro' ||
-    clean === 'hi bro' ||
-    clean === 'hello bro' ||
-    clean === 'ok bro' ||
-    clean === 'okay bro' ||
-    clean === 'bro' ||
-    clean === 'hey gene' ||
-    clean === 'hay gene' ||
-    clean === 'hi gene' ||
-    clean === 'hello gene' ||
-    clean === 'ok gene' ||
-    clean === 'okay gene'
-  ) {
+  // Exact wake phrases and common phonetics heard by browser speech recognition
+  const exactList = [
+    'hey bro', 'hay bro', 'hi bro', 'hello bro', 'ok bro', 'okay bro', 'bro',
+    'hey pro', 'hay pro', 'hi pro', 'hello pro', 'ok pro', 'okay pro', 'pro',
+    'hey gene', 'hay gene', 'hi gene', 'hello gene', 'ok gene', 'okay gene', 'gene',
+    'hey bhai', 'hello bhai', 'hi bhai', 'bhai',
+    'hey brother', 'hi brother', 'hello brother',
+    'yo bro', 'yo gene'
+  ];
+
+  if (exactList.includes(clean)) {
     return true;
   }
 
-  // Matches wake phrase as an isolated phrase / salutation
-  // E.g., "Hey Bro", "Hello Bro, turn on the camera", "Hi, Bro"
-  const wakeRegex = /(?:^|[.!?]|,)\s*(?:hey|hay|hi|hello|ok|okay)[\s,]+(?:bro|gene)(?:\b|[.!?]|,|$)/i;
-  return wakeRegex.test(text);
+  // Matches wake phrase at the start or as a distinct salutation:
+  // e.g., "Hey Bro, is it safe to cross?", "Bro what is ahead?", "Hello Bro read that sign"
+  const wakeRegex = /(?:^|[.!?]|,)\s*(?:hey|hay|hi|hello|ok|okay|yo)?\s*(?:bro|gene|pro|bhai|brah|brother)(?:\b|[.!?]|,|$)/i;
+  return wakeRegex.test(clean);
 }
 
 /**

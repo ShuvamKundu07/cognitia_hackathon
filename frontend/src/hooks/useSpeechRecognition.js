@@ -44,12 +44,10 @@ export function useSpeechRecognition({
   useEffect(() => {
     const wasSpeaking = isSpeakingRef.current;
     isSpeakingRef.current = isSpeaking;
-    if (isSpeaking) {
-      speechCooldownUntilRef.current = Date.now() + 60000; // Cleared when isSpeaking becomes false
-    } else if (wasSpeaking) {
-      // Transitioned from speaking to silent: small 250ms grace period for speaker reverb
-      speechCooldownUntilRef.current = Date.now() + 250;
-    } else {
+    if (wasSpeaking && !isSpeaking) {
+      // 350ms grace period after Bro stops speaking so speaker audio echo doesn't trigger the microphone
+      speechCooldownUntilRef.current = Date.now() + 350;
+    } else if (!isSpeaking) {
       if (speechCooldownUntilRef.current <= Date.now()) {
         speechCooldownUntilRef.current = 0;
       }
@@ -69,213 +67,238 @@ export function useSpeechRecognition({
     setInterimTranscript('');
   }, []);
 
-  const restartRecognition = useCallback(() => {
-    if (!shouldListenRef.current || !recognitionRef.current) return;
-    if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
-
-    restartTimerRef.current = setTimeout(() => {
-      if (!shouldListenRef.current || !recognitionRef.current) return;
+  // Safely stop and discard active recognition instance
+  const stopSession = useCallback(() => {
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+    if (interimTimerRef.current) {
+      clearTimeout(interimTimerRef.current);
+      interimTimerRef.current = null;
+    }
+    if (recognitionRef.current) {
       try {
-        recognitionRef.current.start();
-      } catch (err) {
-        // If already started or browser is busy, ignore
-        if (err.name !== 'InvalidStateError') {
-          console.debug('Speech recognition restart caught:', err);
-        }
+        recognitionRef.current.onstart = null;
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onend = null;
+        recognitionRef.current.abort();
+      } catch (_e) {
+        // ignore
       }
-    }, 150);
+      recognitionRef.current = null;
+    }
   }, []);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang =
-      (typeof navigator !== 'undefined' && (navigator.language || navigator.userLanguage)) ||
-      'en-US';
-
-    recognition.onstart = () => {
-      setIsListening(true);
-      setError(null);
-    };
-
-    recognition.onresult = (event) => {
-      // Self-voice suppression: ignore any recognition while assistant or alert is speaking
-      if (isSpeakingRef.current || Date.now() < speechCooldownUntilRef.current) {
-        return;
-      }
-
-      let interim = '';
-      let final = '';
-
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const item = event.results[i];
-        if (item.isFinal) {
-          final += item[0].transcript;
-        } else {
-          interim += item[0].transcript;
-        }
-      }
-
-      if (interim) {
-        setInterimTranscript(interim);
-        if (onInterimRef.current) {
-          onInterimRef.current(interim);
-        }
-
-        // Continuous mode auto-finalization:
-        // In Chrome/WebKit, continuous mode emits interim deltas but often delays or never sets isFinal.
-        // A 850ms silence debounce auto-finalizes the conversational question.
-        if (interimTimerRef.current) {
-          clearTimeout(interimTimerRef.current);
-        }
-        const candidateInterim = interim.trim();
-        if (candidateInterim) {
-          interimTimerRef.current = setTimeout(() => {
-            const now = Date.now();
-            if (
-              candidateInterim &&
-              (candidateInterim !== lastProcessedRef.current.text ||
-                now - lastProcessedRef.current.timestamp > 1500)
-            ) {
-              lastProcessedRef.current = { text: candidateInterim, timestamp: now };
-              setTranscript(candidateInterim);
-              setInterimTranscript('');
-              if (onCompleteRef.current) {
-                console.log('[SpeechRecognition] Auto-finalized interim query:', candidateInterim);
-                onCompleteRef.current(candidateInterim);
-              }
-            }
-          }, 850);
-        }
-      }
-
-      if (final) {
-        if (interimTimerRef.current) {
-          clearTimeout(interimTimerRef.current);
-          interimTimerRef.current = null;
-        }
-        const cleanFinal = final.trim();
-        const now = Date.now();
-        if (
-          cleanFinal &&
-          (cleanFinal !== lastProcessedRef.current.text ||
-            now - lastProcessedRef.current.timestamp > 1500)
-        ) {
-          lastProcessedRef.current = { text: cleanFinal, timestamp: now };
-          setTranscript(cleanFinal);
-          setInterimTranscript('');
-          if (onCompleteRef.current) {
-            console.log('[SpeechRecognition] Final transcript received:', cleanFinal);
-            onCompleteRef.current(cleanFinal);
-          }
-        }
-      }
-    };
-
-    recognition.onerror = (event) => {
-      if (event.error === 'not-allowed') {
-        shouldListenRef.current = false;
-        setIsListening(false);
-        setError('Microphone permission blocked for speech recognition.');
-      } else if (event.error === 'no-speech') {
-        // Normal in continuous mode; do not surface noisy error
-      } else if (event.error === 'aborted') {
-        // Intentional abort / restart
-      } else {
-        setError(`Recognition notice: ${event.error}`);
-      }
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-      if (shouldListenRef.current) {
-        restartRecognition();
-      }
-    };
-
-    recognitionRef.current = recognition;
-
-    if (autoStart) {
-      shouldListenRef.current = true;
-      try {
-        recognition.start();
-      } catch (_e) {
-        // ignore
-      }
-    }
-
-    return () => {
-      shouldListenRef.current = false;
-      if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
-      if (interimTimerRef.current) clearTimeout(interimTimerRef.current);
-      try {
-        recognition.abort();
-      } catch (_e) {
-        // ignore
-      }
-    };
-  }, [autoStart, restartRecognition]);
-
-  const startListening = useCallback(
-    (withTone = true) => {
-      if (!isSupported || !recognitionRef.current) {
+  // Start fresh recognition session with optional permission bootstrapping
+  const startSession = useCallback(
+    async (withTone = false, isUserInitiated = false) => {
+      if (typeof window === 'undefined') return;
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
         setError('Speech recognition is not supported in this browser. Please type your query.');
         return;
       }
-      setError(null);
+
       shouldListenRef.current = true;
       speechCooldownUntilRef.current = 0;
-      try {
-        recognitionRef.current.start();
-        if (withTone) {
-          soundCues.playMicStart();
+
+      // Clean up previous instance before creating a new one
+      stopSession();
+
+      // If user clicked or pressed space, trigger getUserMedia to prompt for microphone permission
+      if (isUserInitiated && typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach((track) => track.stop());
+          setError(null);
+        } catch (permErr) {
+          if (permErr.name === 'NotAllowedError' || permErr.name === 'PermissionDeniedError') {
+            setError('Microphone permission blocked. Please allow microphone access in your browser address bar.');
+            shouldListenRef.current = false;
+            setIsListening(false);
+            return;
+          }
         }
+      }
+
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.maxAlternatives = 1;
+        recognition.lang =
+          (typeof navigator !== 'undefined' && (navigator.language || navigator.userLanguage)) ||
+          'en-US';
+
+        recognition.onstart = () => {
+          setIsListening(true);
+          setError(null);
+          if (withTone) {
+            soundCues.playMicStart();
+          }
+        };
+
+        recognition.onresult = (event) => {
+          // Self-voice suppression: ignore input while assistant or alarm is actively speaking
+          if (isSpeakingRef.current || Date.now() < speechCooldownUntilRef.current) {
+            return;
+          }
+
+          let interim = '';
+          let final = '';
+
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const item = event.results[i];
+            if (item.isFinal) {
+              final += item[0].transcript;
+            } else {
+              interim += item[0].transcript;
+            }
+          }
+
+          if (interim) {
+            setInterimTranscript(interim);
+            if (onInterimRef.current) {
+              onInterimRef.current(interim);
+            }
+
+            // Silence debounce: auto-finalize interim speech in continuous mode
+            if (interimTimerRef.current) {
+              clearTimeout(interimTimerRef.current);
+            }
+            const candidateInterim = interim.trim();
+            if (candidateInterim) {
+              interimTimerRef.current = setTimeout(() => {
+                const now = Date.now();
+                if (
+                  candidateInterim &&
+                  (candidateInterim.toLowerCase() !== lastProcessedRef.current.text.toLowerCase() ||
+                    now - lastProcessedRef.current.timestamp > 1000)
+                ) {
+                  lastProcessedRef.current = { text: candidateInterim, timestamp: now };
+                  setTranscript(candidateInterim);
+                  setInterimTranscript('');
+                  if (onCompleteRef.current) {
+                    console.log('[SpeechRecognition] Auto-finalized interim query:', candidateInterim);
+                    onCompleteRef.current(candidateInterim);
+                  }
+                }
+              }, 750);
+            }
+          }
+
+          if (final) {
+            if (interimTimerRef.current) {
+              clearTimeout(interimTimerRef.current);
+              interimTimerRef.current = null;
+            }
+            const cleanFinal = final.trim();
+            const now = Date.now();
+            if (
+              cleanFinal &&
+              (cleanFinal.toLowerCase() !== lastProcessedRef.current.text.toLowerCase() ||
+                now - lastProcessedRef.current.timestamp > 1000)
+            ) {
+              lastProcessedRef.current = { text: cleanFinal, timestamp: now };
+              setTranscript(cleanFinal);
+              setInterimTranscript('');
+              if (onCompleteRef.current) {
+                console.log('[SpeechRecognition] Final transcript received:', cleanFinal);
+                onCompleteRef.current(cleanFinal);
+              }
+            }
+          }
+        };
+
+        recognition.onerror = (event) => {
+          if (event.error === 'not-allowed') {
+            // Only flag hard error if user explicitly initiated
+            if (isUserInitiated) {
+              shouldListenRef.current = false;
+              setIsListening(false);
+              setError('Microphone permission blocked. Please click the mic button or allow access in the address bar.');
+            } else {
+              // Silently pause auto-listen until first user gesture
+              setIsListening(false);
+            }
+          } else if (event.error === 'no-speech') {
+            // Normal in continuous mode when silent
+          } else if (event.error === 'aborted') {
+            // Normal session restart
+          } else {
+            console.debug('Speech recognition event note:', event.error);
+          }
+        };
+
+        recognition.onend = () => {
+          setIsListening(false);
+          // Auto-restart with fresh instance if continuous listening should remain active
+          if (shouldListenRef.current) {
+            if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+            restartTimerRef.current = setTimeout(() => {
+              if (shouldListenRef.current) {
+                startSession(false, false);
+              }
+            }, 120);
+          }
+        };
+
+        recognitionRef.current = recognition;
+        recognition.start();
       } catch (err) {
         if (err.name !== 'InvalidStateError') {
-          setError(`Could not start speech recognition: ${err.message}`);
+          console.debug('Speech recognition start error:', err);
         }
       }
     },
-    [isSupported]
+    [stopSession]
+  );
+
+  // Auto-start on mount or upon first interaction
+  useEffect(() => {
+    if (!autoStart || !isSupported) return;
+
+    // Attempt initial start
+    startSession(false, false);
+
+    // If browser required a user gesture, resume upon first click or keypress
+    const onFirstGesture = () => {
+      if (shouldListenRef.current && !isListening) {
+        startSession(false, false);
+      }
+    };
+    window.addEventListener('click', onFirstGesture, { once: true });
+    window.addEventListener('keydown', onFirstGesture, { once: true });
+
+    return () => {
+      shouldListenRef.current = false;
+      stopSession();
+      window.removeEventListener('click', onFirstGesture);
+      window.removeEventListener('keydown', onFirstGesture);
+    };
+  }, [autoStart, isSupported, startSession, stopSession]);
+
+  const startListening = useCallback(
+    (withTone = true) => {
+      setError(null);
+      startSession(withTone, true);
+    },
+    [startSession]
   );
 
   const ensureListening = useCallback(() => {
-    if (!isSupported || !recognitionRef.current) return;
-    shouldListenRef.current = true;
-    speechCooldownUntilRef.current = 0;
-    try {
-      recognitionRef.current.start();
-      soundCues.playMicStart();
-    } catch (err) {
-      // If already running, ignore InvalidStateError
-      if (err.name !== 'InvalidStateError') {
-        setError(`Could not start speech recognition: ${err.message}`);
-        console.debug('ensureListening start note:', err);
-      }
+    if (!shouldListenRef.current || !isListening) {
+      startSession(false, false);
     }
-  }, [isSupported]);
+  }, [isListening, startSession]);
 
   const stopListening = useCallback(() => {
     shouldListenRef.current = false;
-    if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
-    if (interimTimerRef.current) clearTimeout(interimTimerRef.current);
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (_e) {
-        // ignore
-      }
-    }
+    stopSession();
     setIsListening(false);
-  }, []);
+  }, [stopSession]);
 
   return {
     isListening,

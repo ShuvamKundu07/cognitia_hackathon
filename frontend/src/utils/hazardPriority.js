@@ -97,6 +97,11 @@ export function shouldTriggerAlert(alert, alertCache, cooldownMs = 8000) {
   const now = Date.now();
   const currentUrgency = (alert.urgency || '').toLowerCase();
 
+  // Conversational speech and wake-words must NEVER be throttled or suppressed by hazard alert filters
+  if (currentUrgency === 'conversation' || currentUrgency === 'wake_word') {
+    return true;
+  }
+
   // 1. Filter out LOW urgency from audio alerts
   if (currentUrgency === 'low') {
     return false;

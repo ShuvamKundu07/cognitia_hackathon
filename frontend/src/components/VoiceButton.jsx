@@ -61,7 +61,7 @@ export function VoiceButton({
           ? 'Thinking...'
           : isSpeaking
           ? 'Speaking...'
-          : 'Mic Off • Say "Hey Bro"'}
+          : 'Click to Talk • or Say "Hey Bro"'}
       </span>
     </div>
   );

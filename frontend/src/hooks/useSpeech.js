@@ -51,6 +51,10 @@ export function useSpeech({
 
   // Stop active speech and clear all queued speech
   const stop = useCallback(() => {
+    if (currentUtteranceRef.current) {
+      currentUtteranceRef.current.onend = null;
+      currentUtteranceRef.current.onerror = null;
+    }
     speechQueueRef.current = [];
     currentUtteranceRef.current = null;
     isSpeakingRef.current = false;
@@ -63,14 +67,20 @@ export function useSpeech({
         window._activeUtterances.clear();
       }
       if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
+        try {
+          window.speechSynthesis.cancel();
+        } catch (_e) {}
       }
     }
     setIsSpeaking(false);
     setCurrentPriority(null);
     setCurrentText('');
     if (onSpeechEndRef.current) {
-      onSpeechEndRef.current();
+      try {
+        onSpeechEndRef.current();
+      } catch (e) {
+        console.error('Error in onSpeechEnd callback:', e);
+      }
     }
   }, []);
 
@@ -178,10 +188,15 @@ export function useSpeech({
 
     currentUtteranceRef.current = utterance;
     isSpeakingRef.current = true;
+    setIsSpeaking(true);
+    setCurrentPriority(nextItem.priority);
+    setCurrentText(nextItem.text);
 
     try {
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        try {
+          window.speechSynthesis.resume();
+        } catch (_e) {}
       }
       window.speechSynthesis.speak(utterance);
     } catch (err) {
@@ -194,45 +209,76 @@ export function useSpeech({
     processNextInQueueRef.current = processNextInQueue;
   }, [processNextInQueue]);
 
+  // Periodic safeguard to unpause Chrome Web Speech API if it silently stalls
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    const interval = setInterval(() => {
+      if (isSpeakingRef.current && window.speechSynthesis.paused) {
+        try {
+          window.speechSynthesis.resume();
+        } catch (_e) {}
+      }
+    }, 1500);
+    return () => clearInterval(interval);
+  }, []);
+
   /**
    * Speak a message with strict safety prioritization and interruption.
    */
   const speak = useCallback(
     (text, options = {}) => {
-      if (!text || !enabled || !speechSupported) return;
+      if (!text || !enabled || !speechSupported) {
+        if (options.onEnd) {
+          setTimeout(options.onEnd, 0);
+        }
+        return;
+      }
 
       const level = (options.priorityLevel || 'CONVERSATION').toUpperCase();
       const priority = SPEECH_PRIORITY[level] || SPEECH_PRIORITY.CONVERSATION;
       const hazardId = options.hazardId;
+      const isConversational = level === 'CONVERSATION' || level === 'WAKE_WORD';
 
-      // Deduplication check for hazard alerts and repeated speech to prevent spam
-      const alertObj = {
-        hazard_id: hazardId,
-        message: text,
-        hazard_type: options.hazardType,
-        direction: options.direction,
-        urgency: level.toLowerCase(),
-      };
-      if (!shouldTriggerAlert(alertObj, alertCacheRef.current, cooldownMs)) {
-        return;
-      }
-      const record = {
-        timestamp: Date.now(),
-        urgency: level.toLowerCase(),
-      };
-      if (hazardId) {
-        alertCacheRef.current.set(hazardId, record);
-      }
-      alertCacheRef.current.set(`msg_${text.trim().toLowerCase()}`, record);
-      if (options.hazardType) {
-        alertCacheRef.current.set(`sem_${(options.hazardType).toLowerCase()}_${(options.direction || 'ahead').toLowerCase()}`, record);
+      // Deduplication check: ONLY applied to hazard alerts (never block conversational assistant dialogue)
+      if (!isConversational) {
+        const alertObj = {
+          hazard_id: hazardId,
+          message: text,
+          hazard_type: options.hazardType,
+          direction: options.direction,
+          urgency: level.toLowerCase(),
+        };
+        if (!shouldTriggerAlert(alertObj, alertCacheRef.current, cooldownMs)) {
+          if (options.onEnd) {
+            setTimeout(options.onEnd, 0);
+          }
+          return;
+        }
+        const record = {
+          timestamp: Date.now(),
+          urgency: level.toLowerCase(),
+        };
+        if (hazardId) {
+          alertCacheRef.current.set(hazardId, record);
+        }
+        alertCacheRef.current.set(`msg_${text.trim().toLowerCase()}`, record);
+        if (options.hazardType) {
+          alertCacheRef.current.set(`sem_${(options.hazardType).toLowerCase()}_${(options.direction || 'ahead').toLowerCase()}`, record);
+        }
       }
 
       const isCritical = priority === SPEECH_PRIORITY.CRITICAL;
       const isHigherPriority = currentPriority !== null && priority > currentPriority;
       // An active CRITICAL emergency alert must NEVER be interrupted by a lower-priority detection
       const isCurrentlyCritical = currentPriority === SPEECH_PRIORITY.CRITICAL;
-      const canInterrupt = !isCurrentlyCritical && (isCritical || isHigherPriority || (options.interrupt && priority >= (currentPriority || 0)));
+      // Conversational responses and wake words preempt previous conversational speech
+      const isConversationalPreemption = isConversational && (currentPriority === null || currentPriority <= SPEECH_PRIORITY.WAKE_WORD);
+      const canInterrupt = !isCurrentlyCritical && (
+        isCritical ||
+        isHigherPriority ||
+        isConversationalPreemption ||
+        (options.interrupt && priority >= (currentPriority || 0))
+      );
 
       if (isCritical || canInterrupt) {
         if (isCritical) {
@@ -241,8 +287,22 @@ export function useSpeech({
           soundCues.playWarningChime();
         }
 
-        if (window.speechSynthesis) {
-          window.speechSynthesis.cancel();
+        // Detach listeners from currently active utterance before cancelling
+        // so its onend/onerror does not fire stale callbacks or cause race conditions
+        if (currentUtteranceRef.current) {
+          currentUtteranceRef.current.onend = null;
+          currentUtteranceRef.current.onerror = null;
+        }
+
+        if (watchdogTimerRef.current) {
+          clearTimeout(watchdogTimerRef.current);
+          watchdogTimerRef.current = null;
+        }
+
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+          try {
+            window.speechSynthesis.cancel();
+          } catch (_e) {}
         }
 
         speechQueueRef.current = speechQueueRef.current.filter((item) => item.priority >= priority);
@@ -258,20 +318,29 @@ export function useSpeech({
 
         currentUtteranceRef.current = null;
         isSpeakingRef.current = false;
-        // Brief 160ms pause so subtle notification cue sounds first without masking the initial spoken word
+        const delayMs = isCritical ? 160 : (priority === SPEECH_PRIORITY.HIGH ? 120 : 25);
         setTimeout(() => {
           processNextInQueue();
-        }, 160);
+        }, delayMs);
         return;
       }
 
       // If a critical alert is actively speaking, drop lower-priority alerts rather than queuing to speak afterwards
       if (isCurrentlyCritical && !isCritical) {
+        if (options.onEnd) {
+          setTimeout(options.onEnd, 0);
+        }
         return;
       }
 
       // Avoid speaking too many alerts back-to-back by capping queued non-critical speech
       if (speechQueueRef.current.length >= 2) {
+        const droppedItems = speechQueueRef.current.filter((item) => item.priority < priority);
+        droppedItems.forEach((item) => {
+          if (item.onEnd) {
+            setTimeout(item.onEnd, 0);
+          }
+        });
         speechQueueRef.current = speechQueueRef.current.filter((item) => item.priority >= priority).slice(0, 1);
       }
 
@@ -286,8 +355,10 @@ export function useSpeech({
       });
 
       if (!isSpeakingRef.current && !currentUtteranceRef.current) {
-        if (typeof window !== 'undefined' && window.speechSynthesis && window.speechSynthesis.paused) {
-          window.speechSynthesis.resume();
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+          try {
+            window.speechSynthesis.resume();
+          } catch (_e) {}
         }
         processNextInQueue();
       }

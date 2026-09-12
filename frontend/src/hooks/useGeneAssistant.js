@@ -46,6 +46,8 @@ export function useGeneAssistant({
   const silenceTimerRef = useRef(null);
   const presenceRetryTimerRef = useRef(null);
   const resumeStateRef = useRef(null);
+  const thinkingTimeoutRef = useRef(null);
+  const transitionToListeningRef = useRef(null);
 
   // Clear silence timers helper
   const clearSilenceTimers = useCallback(() => {
@@ -57,6 +59,10 @@ export function useGeneAssistant({
       clearTimeout(presenceRetryTimerRef.current);
       presenceRetryTimerRef.current = null;
     }
+    if (thinkingTimeoutRef.current) {
+      clearTimeout(thinkingTimeoutRef.current);
+      thinkingTimeoutRef.current = null;
+    }
   }, []);
 
   // Update backend conversation status
@@ -64,11 +70,34 @@ export function useGeneAssistant({
     (newState) => {
       setGeneState(newState);
       geneStateRef.current = newState;
+      if (newState !== GENE_STATE.THINKING && thinkingTimeoutRef.current) {
+        clearTimeout(thinkingTimeoutRef.current);
+        thinkingTimeoutRef.current = null;
+      }
+      if (newState === GENE_STATE.THINKING) {
+        if (thinkingTimeoutRef.current) {
+          clearTimeout(thinkingTimeoutRef.current);
+        }
+        thinkingTimeoutRef.current = setTimeout(() => {
+          if (geneStateRef.current === GENE_STATE.THINKING) {
+            console.warn('[GENE ASSISTANT] Thinking timeout reached (12s). Resetting to LISTENING.');
+            speak("Hazard monitoring is active. What can I check for you?", {
+              priorityLevel: 'CONVERSATION',
+              interrupt: true,
+              onEnd: () => {
+                if (transitionToListeningRef.current) {
+                  transitionToListeningRef.current();
+                }
+              },
+            });
+          }
+        }, 12000);
+      }
       if (sendConversationStatus) {
         sendConversationStatus(newState);
       }
     },
-    [sendConversationStatus]
+    [sendConversationStatus, speak]
   );
 
   // Start 10-second silence timer for LISTENING state
@@ -121,6 +150,10 @@ export function useGeneAssistant({
     }
   }, [updateState, startSilenceTimer]);
 
+  useEffect(() => {
+    transitionToListeningRef.current = transitionToListening;
+  }, [transitionToListening]);
+
   // Transition Gene to IDLE sleeping mode
   const transitionToIdle = useCallback(
     (farewellMessage = "You're welcome. I'll keep monitoring your surroundings.") => {
@@ -128,6 +161,7 @@ export function useGeneAssistant({
       if (farewellMessage) {
         speak(farewellMessage, {
           priorityLevel: 'CONVERSATION',
+          interrupt: true,
           onEnd: () => {
             updateState(GENE_STATE.IDLE);
           },
@@ -159,6 +193,7 @@ export function useGeneAssistant({
 
     speak(wakeReply, {
       priorityLevel: 'WAKE_WORD',
+      interrupt: true,
       onEnd: () => {
         transitionToListening();
       },
@@ -175,12 +210,12 @@ export function useGeneAssistant({
       const currentState = geneStateRef.current;
       console.log(`[GENE ASSISTANT] Received transcript: "${cleanText}" in state: ${currentState}`);
 
-      // 1. In IDLE state: strictly evaluate for wake word ("Hey Bro" / "Hello Bro")
+      // 1. In IDLE state: evaluate for wake word or direct question
       if (currentState === GENE_STATE.IDLE) {
         if (isWakePhrase(cleanText)) {
           setUserTranscript(cleanText);
           const stripped = cleanText
-            .replace(/^(?:hey|hay|hi|hello|ok|okay)?\s*(?:bro|gene)[,\s]*/i, '')
+            .replace(/^(?:hey|hay|hi|hello|ok|okay|yo)?\s*(?:bro|gene|pro|bhai|brah|brother)[,\s]*/i, '')
             .trim();
 
           if (stripped && !isExitPhrase(stripped)) {
@@ -193,6 +228,7 @@ export function useGeneAssistant({
               setAssistantResponse(cmdResult.response);
               speak(cmdResult.response, {
                 priorityLevel: 'CONVERSATION',
+                interrupt: true,
                 onEnd: () => {
                   transitionToListening();
                 },
@@ -212,6 +248,35 @@ export function useGeneAssistant({
           }
 
           activateGene();
+          return;
+        }
+
+        // Direct inquiry from IDLE: If the user speaks a direct question or command without "Hey Bro"
+        // (e.g. "Is it safe to cross?", "What is in front of me?", "Turn on the camera", "Read sign")
+        if (cleanText.length > 3) {
+          setUserTranscript(cleanText);
+          clearSilenceTimers();
+
+          const cmdResult = executeVoiceCommand(cleanText, voiceContextRef.current);
+          if (cmdResult && cmdResult.handled) {
+            updateState(GENE_STATE.SPEAKING);
+            setAssistantResponse(cmdResult.response);
+            speak(cmdResult.response, {
+              priorityLevel: 'CONVERSATION',
+              interrupt: true,
+              onEnd: () => {
+                transitionToListening();
+              },
+            });
+            return;
+          }
+
+          updateState(GENE_STATE.THINKING);
+          if (sendConversation) {
+            console.log('[GENE ASSISTANT] Direct spoken inquiry from IDLE:', cleanText);
+            sendConversation(cleanText);
+          }
+          return;
         }
         return;
       }
@@ -252,6 +317,7 @@ export function useGeneAssistant({
           setAssistantResponse(cmdResult.response);
           speak(cmdResult.response, {
             priorityLevel: 'CONVERSATION',
+            interrupt: true,
             onEnd: () => {
               transitionToListening();
             },
@@ -302,6 +368,7 @@ export function useGeneAssistant({
         setAssistantResponse(cmdResult.response);
         speak(cmdResult.response, {
           priorityLevel: 'CONVERSATION',
+          interrupt: true,
           onEnd: () => {
             transitionToListening();
           },
@@ -336,6 +403,7 @@ export function useGeneAssistant({
       if (isExit) {
         speak(text, {
           priorityLevel: 'CONVERSATION',
+          interrupt: true,
           onEnd: () => {
             updateState(GENE_STATE.IDLE);
           },
@@ -348,6 +416,7 @@ export function useGeneAssistant({
 
       speak(text, {
         priorityLevel: 'CONVERSATION',
+        interrupt: true,
         onEnd: () => {
           transitionToListening();
         },
@@ -419,8 +488,8 @@ export function useGeneAssistant({
   // Manual Mic toggle button handler
   const toggleListening = useCallback(() => {
     if (geneState === GENE_STATE.IDLE) {
-      if (!isMicListening) {
-        startListening();
+      if (startListening) {
+        startListening(true);
       }
       activateGene();
     } else {
@@ -431,7 +500,7 @@ export function useGeneAssistant({
       soundCues.stopAll();
       transitionToIdle('');
     }
-  }, [geneState, isMicListening, startListening, activateGene, transitionToIdle, cancelAllSpeech]);
+  }, [geneState, startListening, activateGene, transitionToIdle, cancelAllSpeech]);
 
   // Clean up timers on unmount
   useEffect(() => {
